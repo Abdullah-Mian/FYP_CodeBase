@@ -279,3 +279,19 @@ reset_pin = board.D27   # GPIO 27 (Reset)
 ## 📝 License
 
 MIT License - Feel free to modify and use in your projects!
+
+
+
+`
+sudo apt install -y python3-libcamera python3-picamera2
+
+python3 -m venv --system-site-packages env
+source env/bin/activate
+
+pip install adafruit-circuitpython-rgb-display pillow
+# for touch screen
+#pip install RPi.GPIO spidev 
+
+python CamCaptureLiveTFT.py
+
+`
