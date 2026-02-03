@@ -1,0 +1,45 @@
+# Create environment (Python 3.10 is very safe & compatible)
+conda create -n onnx-export python=3.10
+conda activate onnx-export
+
+# Install PyTorch CPU version (very fast install, small download)
+conda install pytorch torchvision torchaudio cpuonly -c pytorch
+
+# Or if you prefer pip (exactly what you had, but inside conda env)
+# pip install torch==2.3.1 torchvision==0.18.1 --index-url https://download.pytorch.org/whl/cpu
+
+# Install ONNX + simplifier
+pip install onnx==1.16.0 onnxsim==0.4.36
+
+# Optional but useful: onnxruntime (to quickly test the .onnx file)
+pip install onnxruntime
+
+
+
+========================================================================
+# First deactivate if active
+#conda deactivate
+
+# Remove the env completely (including all packages)
+#conda env remove -n onnx-export
+
+==================with exact versions
+
+# Create fresh env with Python 3.10 (very stable for torch 2.3 + onnx 1.16)
+conda create -n onnx-export python=3.10 -y
+conda activate onnx-export
+
+# Install PyTorch CPU-only pinned version (what you used)
+pip install torch==2.3.1 torchvision==0.18.1 --index-url https://download.pytorch.org/whl/cpu --no-cache-dir
+
+# Force downgrade NumPy (this will remove 2.2.6 and install latest 1.x compatible version)
+pip install "numpy<2" --force-reinstall --no-cache-dir
+
+# ONNX core + runtime (your validation used onnxruntime, so include it)
+pip install onnx==1.16.0 onnxruntime==1.16.3 --no-cache-dir
+
+# ONNX simplifier (exact version you used — 0.4.36 is recent and stable)
+pip install onnxsim==0.4.36 --no-cache-dir
+
+# Optional: netron (very useful desktop viewer for .onnx files — no version pin needed)
+pip install netron
