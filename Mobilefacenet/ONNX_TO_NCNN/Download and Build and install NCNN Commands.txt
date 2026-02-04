@@ -1,0 +1,56 @@
+cd ~
+
+# 2. Check if ncnn directory exists (from your first clone attempt)
+ls -la | grep ncnn
+
+# 3. If it exists, remove it and start fresh
+rm -rf ncnn
+
+# 4. Clone ncnn WITHOUT --depth 1 (to avoid submodule issues)
+git clone https://github.com/Tencent/ncnn.git
+
+# 5. Enter ncnn directory
+cd ncnn
+
+# 6. Initialize submodules
+git submodule update --init --recursive
+
+
+# Install ONNX Python library (contains the protobuf definitions ncnn needs)
+sudo apt install -y python3-onnx
+
+# OR install via pip (works better)
+pip install onnx==1.15.0 --no-cache-dir
+
+
+# 7. Create build directory
+mkdir -p build
+cd build
+
+###############
+# or if you are going to rebuild ncnn
+cd ~/ncnn/build
+rm -rf *
+###############
+
+cmake -DCMAKE_BUILD_TYPE=Release \
+      -DNCNN_VULKAN=ON \
+      -DNCNN_BUILD_TOOLS=ON \
+      -DNCNN_BUILD_EXAMPLES=OFF \
+      -DNCNN_BUILD_BENCHMARK=OFF \
+      -DNCNN_BUILD_TESTS=OFF \
+      -DNCNN_SYSTEM_GLSLANG=OFF \
+      -DNCNN_PYTHON=ON \
+      ..
+
+# Look for this line - should now say YES:
+# -- Building with onnx = YES
+
+make -j4
+
+# and if not asked Install manually
+sudo make install
+sudo ldconfig
+
+# Verify ONNX tools are now built
+ls ~/ncnn/build/tools/onnx/
