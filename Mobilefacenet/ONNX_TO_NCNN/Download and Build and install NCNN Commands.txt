@@ -23,6 +23,17 @@ sudo apt install -y python3-onnx
 pip install onnx==1.15.0 --no-cache-dir
 
 
+
+
+##########################################
+# Install the Protobuf Compiler
+sudo apt update
+sudo apt install -y protobuf-compiler libprotobuf-dev
+
+protoc --version
+# Output should be something like: libprotoc 3.21.12
+##########################################
+
 # 7. Create build directory
 mkdir -p build
 cd build
