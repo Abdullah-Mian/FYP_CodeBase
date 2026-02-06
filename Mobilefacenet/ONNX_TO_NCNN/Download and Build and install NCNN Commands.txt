@@ -65,3 +65,36 @@ sudo ldconfig
 
 # Verify ONNX tools are now built
 ls ~/ncnn/build/tools/onnx/
+
+
+###############################################
+# if onnx not found
+# Step 1: Verify ncnn was built
+ls ~/ncnn/build/install/lib/libncnn.a
+ls ~/ncnn/build/install/include/ncnn/
+
+# Step 2: Manually install to system directories
+sudo mkdir -p /usr/local/lib/ncnn
+sudo mkdir -p /usr/local/include/ncnn
+
+# Step 3: Copy library
+sudo cp ~/ncnn/build/install/lib/libncnn.a /usr/local/lib/ncnn/libncnn.a
+
+# Step 4: Copy headers
+sudo cp -r ~/ncnn/build/install/include/ncnn/* /usr/local/include/ncnn/
+
+# Step 5: Copy glslang libraries (needed for Vulkan)
+sudo cp ~/ncnn/build/install/lib/libglslang.a /usr/local/lib/
+sudo cp ~/ncnn/build/install/lib/libSPIRV.a /usr/local/lib/
+sudo cp ~/ncnn/build/install/lib/libMachineIndependent.a /usr/local/lib/
+sudo cp ~/ncnn/build/install/lib/libGenericCodeGen.a /usr/local/lib/
+sudo cp ~/ncnn/build/install/lib/libOSDependent.a /usr/local/lib/
+sudo cp ~/ncnn/build/install/lib/libglslang-default-resource-limits.a /usr/local/lib/
+
+# Step 6: Update library cache
+sudo ldconfig
+
+# Step 7: Verify installation
+ls /usr/local/lib/ncnn/libncnn.a
+ls /usr/local/include/ncnn/net.h
+####################################################3

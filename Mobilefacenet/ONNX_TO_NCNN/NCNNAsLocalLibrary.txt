@@ -1,0 +1,113 @@
+##ALTERNATIVE: Use Local ncnn
+#use ncnn as a local library without system installation!
+
+cd ~/Downloads/FYP/MobileFaceNet_CPP
+
+# Download pre-converted models
+mkdir -p models
+cd models
+wget https://raw.githubusercontent.com/GRAYKEY/mobilefacenet_ncnn/master/models/mobilefacenet.param
+wget https://raw.githubusercontent.com/GRAYKEY/mobilefacenet_ncnn/master/models/mobilefacenet.bin
+cd ..
+
+# Create CMakeLists.txt that uses LOCAL ncnn
+cat > CMakeLists.txt << 'EOF'
+cmake_minimum_required(VERSION 3.10)
+project(MobileFaceNet_Test)
+
+set(CMAKE_CXX_STANDARD 11)
+
+# Find OpenCV
+find_package(OpenCV REQUIRED)
+
+# LOCAL ncnn paths (no system installation needed!)
+set(NCNN_DIR "$ENV{HOME}/ncnn/build/install")
+set(NCNN_INCLUDE_DIR "${NCNN_DIR}/include/ncnn")
+set(NCNN_LIB "${NCNN_DIR}/lib/libncnn.a")
+
+# glslang libraries (for Vulkan support)
+set(GLSLANG_LIBS
+    ${NCNN_DIR}/lib/libglslang.a
+    ${NCNN_DIR}/lib/libSPIRV.a
+    ${NCNN_DIR}/lib/libMachineIndependent.a
+    ${NCNN_DIR}/lib/libGenericCodeGen.a
+    ${NCNN_DIR}/lib/libOSDependent.a
+    ${NCNN_DIR}/lib/libglslang-default-resource-limits.a
+)
+
+include_directories(
+    ${OpenCV_INCLUDE_DIRS}
+    ${NCNN_INCLUDE_DIR}
+)
+
+add_executable(test_model src/main.cpp)
+
+target_link_libraries(test_model
+    ${OpenCV_LIBS}
+    ${NCNN_LIB}
+    ${GLSLANG_LIBS}
+    pthread
+    dl
+)
+EOF
+
+# Create simple test code
+mkdir -p src
+cat > src/main.cpp << 'EOF'
+#include <iostream>
+#include "net.h"
+
+int main() {
+    ncnn::Net net;
+
+    net.opt.num_threads = 4;
+    net.opt.use_vulkan_compute = false;
+
+    int ret_param = net.load_param("../models/mobilefacenet.param");
+    int ret_bin = net.load_model("../models/mobilefacenet.bin");
+
+    if (ret_param != 0 || ret_bin != 0) {
+        std::cerr << "❌ Failed to load model!" << std::endl;
+        std::cerr << "   param ret: " << ret_param << std::endl;
+        std::cerr << "   bin ret: " << ret_bin << std::endl;
+        return -1;
+    }
+
+    std::cout << "✅ MobileFaceNet loaded successfully!" << std::endl;
+
+    // Test inference with dummy input
+    ncnn::Mat in(112, 112, 3);
+    in.fill(0.5f);
+
+    ncnn::Extractor ex = net.create_extractor();
+    ex.input("data", in);
+
+    ncnn::Mat out;
+    int ret = ex.extract("fc1", out);
+
+    if (ret != 0) {
+        std::cerr << "❌ Inference failed!" << std::endl;
+        return -1;
+    }
+
+    std::cout << "✅ Inference successful!" << std::endl;
+    std::cout << "   Output dimension: " << out.w << std::endl;
+
+    return 0;
+}
+EOF
+
+# Build
+mkdir -p build && cd build
+cmake ..
+make -j4
+
+# Run
+./test_model
+```
+
+**Expected output:**
+```
+✅ MobileFaceNet loaded successfully!
+✅ Inference successful!
+   Output dimension: 128

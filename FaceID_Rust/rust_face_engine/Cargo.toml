@@ -1,0 +1,12 @@
+[package]
+name = "rust_face_engine"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# The inference engine (Pure Rust)
+tract-onnx = "0.21.7"
+# Image processing
+image = "0.25.5"
+# Error handling
+anyhow = "1.0"

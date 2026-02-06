@@ -1,0 +1,48 @@
+`# Clone the repository from GitHub into a new folder named 'FaceID'.
+git clone https://github.com/Abdullah-Mian/FaceID.git
+
+# Navigate into your new project directory.
+cd FaceID`
+
+`# Create the virtual environment.
+python3 -m venv venv
+
+# Activate the virtual environment. Your command prompt will change to show '(venv)'.
+source venv/bin/activate`
+
+`sudo apt install -y libopenblas-dev libopenjp2-7 libjpeg-dev libtiff-dev libavcodec-dev libavformat-dev libswscale-dev libgtk-3-dev`
+
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu --no-cache-dir
+
+pip install opencv-python numpy requests
+
+
+# Install Picamera2 (modern camera interface for Pi)
+sudo apt install -y python3-picamera2 python3-libcamera python3-kms++
+
+# Install OpenCV with proper Pi support
+pip install opencv-python opencv-contrib-python
+
+# Check if camera is detected
+libcamera-hello --list-cameras
+
+# Install Picamera2 (if not already installed)
+sudo apt install -y python3-picamera2
+
+# If you're in a virtual environment, you need to give it access to system packages
+# Deactivate and recreate venv with system packages
+deactivate
+
+# Recreate venv with system site packages (to access picamera2)
+python3 -m venv --system-site-packages venv
+
+# Reactivate
+source venv/bin/activate
+
+# Install remaining packages
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+pip install opencv-python numpy requests pillow
+
+pip uninstall numpy -y
+pip install numpy==1.26.4
+pip list | grep numpy
