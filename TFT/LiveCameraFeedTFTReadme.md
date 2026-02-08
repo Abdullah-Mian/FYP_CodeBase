@@ -288,7 +288,15 @@ sudo apt install -y python3-libcamera python3-picamera2
 python3 -m venv --system-site-packages env
 source env/bin/activate
 
-pip install adafruit-circuitpython-rgb-display pillow
+# Install mediapipe
+pip install mediapipe
+
+# Install Adafruit libraries for the RGB display
+pip install adafruit-blinka adafruit-circuitpython-rgb-display
+
+# pip install adafruit-circuitpython-rgb-display pillow
+pip install adafruit-blinka adafruit-circuitpython-rgb-display
+
 # for touch screen
 #pip install RPi.GPIO spidev 
 

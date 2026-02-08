@@ -65,8 +65,21 @@ sudo ldconfig
 
 # Verify ONNX tools are now built
 ls ~/ncnn/build/tools/onnx/
+###############################################
+#proceed with conversion:
+cd ~/Downloads/FYP/Mobilefacenet
 
+~/ncnn/build/tools/onnx/onnx2ncnn \
+  models/mobilefacenet_sim.onnx \
+  models/mobilefacenet.param \
+  models/mobilefacenet.bin
 
+~/ncnn/build/tools/ncnnoptimize \
+  models/mobilefacenet.param \
+  models/mobilefacenet.bin \
+  models/mobilefacenet_opt.param \
+  models/mobilefacenet_opt.bin \
+  0
 ###############################################
 # if onnx not found
 # Step 1: Verify ncnn was built
