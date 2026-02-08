@@ -1,0 +1,43 @@
+
+git clone https://github.com/GRAYKEY/mobilefacenet_ncnn.git temp_models
+git clone https://github.com/liguiyuan/mobilefacenet-ncnn.git temp2
+
+# Create project directory
+mkdir -p MobileFaceNet_CPP
+cd MobileFaceNet_CPP
+
+# Create subdirectories
+mkdir -p models database src
+
+# Download pre-converted NCNN models
+cd models
+wget https://raw.githubusercontent.com/GRAYKEY/mobilefacenet_ncnn/master/models/mobilefacenet.param
+wget https://raw.githubusercontent.com/GRAYKEY/mobilefacenet_ncnn/master/models/mobilefacenet.bin
+
+# Verify download
+ls -lh mobilefacenet.*
+
+#install opem MP
+sudo apt install -y libomp-dev
+# Verify
+ls /usr/lib/aarch64-linux-gnu/libgomp.so
+
+
+# Install OpenCV development package
+sudo apt update
+sudo apt install -y libopencv-dev
+
+# Verify OpenCV is installed
+pkg-config --modversion opencv4
+
+# Go back to build
+cd ~/Downloads/Mobilefacet_CPP/build
+rm -rf *
+
+cmake ..
+
+# Build
+make -j4
+
+# Run
+./test_model

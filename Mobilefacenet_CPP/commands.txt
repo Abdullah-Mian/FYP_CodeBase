@@ -1,43 +1,76 @@
+MobileFaceNet_RPi/
+├── CMakeLists.txt
+├── src/
+│   ├── face_engine.h
+│   ├── face_engine.cpp
+│   ├── mobilefacenet.h
+│   ├── mobilefacenet.cpp
+│   └── face_detector.h
+│   └── face_detector.cpp
+├── python/
+│   └── face_system.py
+├── models/
+│   ├── mobilefacenet.param
+│   ├── mobilefacenet.bin
+│   ├── ultraface-rfb-320.param    # You need to download this
+│   └── ultraface-rfb-320.bin      # You need to download this
+└── database/
 
-git clone https://github.com/GRAYKEY/mobilefacenet_ncnn.git temp_models
-git clone https://github.com/liguiyuan/mobilefacenet-ncnn.git temp2
+##########################################
 
-# Create project directory
-mkdir -p MobileFaceNet_CPP
-cd MobileFaceNet_CPP
+cd models/
+# Get the BlazeFace model files
+cd ~/Downloads/Mobilefacet_CPP/models
 
-# Create subdirectories
-mkdir -p models database src
+# Clone just the model files from zineos/blazeface
+cd /tmp
+git clone --depth 1 https://github.com/zineos/blazeface.git
+cp /tmp/blazeface/demo_ncnn/model/blaceface.param ~/Downloads/Mobilefacet_CPP/models/blazeface.param
+cp /tmp/blazeface/demo_ncnn/model/blaceface.bin ~/Downloads/Mobilefacet_CPP/models/blazeface.bin
+rm -rf /tmp/blazeface
 
-# Download pre-converted NCNN models
-cd models
-wget https://raw.githubusercontent.com/GRAYKEY/mobilefacenet_ncnn/master/models/mobilefacenet.param
-wget https://raw.githubusercontent.com/GRAYKEY/mobilefacenet_ncnn/master/models/mobilefacenet.bin
-
-# Verify download
-ls -lh mobilefacenet.*
-
-#install opem MP
-sudo apt install -y libomp-dev
 # Verify
-ls /usr/lib/aarch64-linux-gnu/libgomp.so
+head -1 ~/Downloads/Mobilefacet_CPP/models/blazeface.param
+# Should show: 7767517
 
+ls -la ~/Downloads/Mobilefacet_CPP/models/
 
-# Install OpenCV development package
-sudo apt update
-sudo apt install -y libopencv-dev
+##########################
 
-# Verify OpenCV is installed
-pkg-config --modversion opencv4
+#!/bin/bash
+set -e
 
-# Go back to build
-cd ~/Downloads/Mobilefacet_CPP/build
+# ====== 2. Build C++ ======
+cd ~/Downloads/Mobilefacet_CPP
+mkdir -p build database
+cd build
 rm -rf *
-
-cmake ..
-
-# Build
+cmake -DCMAKE_BUILD_TYPE=Release ..
 make -j4
+echo "✅ Build complete"
 
-# Run
-./test_model
+
+# ====== 3. Setup Python env (for hybrid mode) ======
+
+cd ~/Downloads/Mobilefacet_CPP
+rm -rf venv
+
+python3 -m venv --system-site-packages venv
+source venv/bin/activate
+
+# do not pip install opencv
+sudo apt install -y python3-opencv
+python3 -c "from picamera2 import Picamera2; print('✅ picamera2 OK')"
+
+
+pip install adafruit-blinka adafruit-circuitpython-rgb-display
+pip install mediapipe
+
+
+# ====== 4. Test standalone C++ (from XFCE desktop) ======
+
+# To run pure C++:
+cd build && ./face_system_cpp
+
+# To run hybrid:
+python3 python/face_system.py

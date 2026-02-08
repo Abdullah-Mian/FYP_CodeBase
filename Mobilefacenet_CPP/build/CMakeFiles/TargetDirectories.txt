@@ -1,0 +1,4 @@
+/home/faizy/Downloads/Mobilefacet_CPP/build/CMakeFiles/face_engine.dir
+/home/faizy/Downloads/Mobilefacet_CPP/build/CMakeFiles/face_system_cpp.dir
+/home/faizy/Downloads/Mobilefacet_CPP/build/CMakeFiles/edit_cache.dir
+/home/faizy/Downloads/Mobilefacet_CPP/build/CMakeFiles/rebuild_cache.dir
