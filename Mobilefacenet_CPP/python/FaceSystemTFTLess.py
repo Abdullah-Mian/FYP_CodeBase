@@ -332,14 +332,17 @@ try:
         # picamera2 outputs BGR888 directly (GPU ISP configured for BGR)
         frame_bgr = picam2.capture_array("main")
 
-        # ── Detect Faces with MediaPipe BlazeFace ──
-        # MediaPipe expects RGB, so convert from BGR
+        # ── Convert to RGB for MediaPipe and Display ──
+        # Single conversion: BGR → RGB (used by both MediaPipe and monitor display)
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+
+        # ── Detect Faces with MediaPipe BlazeFace ──
+        # MediaPipe expects RGB
         results = blazeface.process(frame_rgb)
 
         faces = []
         if results.detections:
-            h, w = frame_bgr.shape[:2]
+            h, w = frame_rgb.shape[:2]
             for detection in results.detections:
                 # Extract bounding box (MediaPipe uses relative coordinates)
                 bbox = detection.location_data.relative_bounding_box
@@ -358,22 +361,22 @@ try:
                     faces.append((x_min, y_min, x_max - x_min, y_max - y_min,
                                 float(detection.score[0])))
 
-        # ── Process Each Face ──
+        # ── Process Each Face Independently ──
         for (x1, y1, w, h, score) in faces:
             x2, y2 = x1 + w, y1 + h
 
-            # Extract face crop (BGR from camera frame)
-            face_crop = frame_bgr[y1:y2, x1:x2]
+            # Extract face crop from BGR frame (MobileFaceNet needs BGR)
+            face_crop_bgr = frame_bgr[y1:y2, x1:x2]
 
-            if face_crop.shape[0] < 20 or face_crop.shape[1] < 20:
+            if face_crop_bgr.shape[0] < 20 or face_crop_bgr.shape[1] < 20:
                 continue
 
-            color = (0, 255, 0)  # Green in BGR
+            color = (255, 0, 0)  # Red in RGB (default)
             label = f"{score:.2f}"
 
             # ── ADD MODE ──
             if mode == "ADD" and add_name:
-                add_face(add_name, face_crop.copy())
+                add_face(add_name, face_crop_bgr.copy())
                 print(f"✅ Added: {add_name}")
                 add_name = ""
                 mode = "VERIFY"
@@ -381,13 +384,14 @@ try:
 
             # ── VERIFY MODE ──
             elif mode == "VERIFY":
-                # Check smart cache
+                # Check smart cache using bounding box position
+                # Each face tracked independently by its (x, y, w, h) position
                 cached_name, cached_score, should_verify = get_cached_result((x1, y1, w, h))
 
                 if should_verify:
                     # Perform verification (calls C++ MobileFaceNet)
-                    name, sim = verify_face(face_crop.copy())
-                    # Store in cache
+                    name, sim = verify_face(face_crop_bgr.copy())
+                    # Store in cache with THIS face's unique position
                     face_cache[(x1, y1, w, h)] = (name, sim, time.time(), True)
                     verify_result = (name, sim)
                     verify_timer = 30
@@ -399,17 +403,15 @@ try:
 
                 # Set color and label based on recognition result
                 if name != "Unknown":
-                    color = (0, 255, 0)  # Green for recognized
+                    color = (0, 255, 0)  # Green for recognized (RGB)
                     label = f"{name} ({sim:.2f})"
                 else:
-                    color = (0, 0, 255)  # Red for unknown
+                    color = (255, 0, 0)  # Red for unknown (RGB)
                     label = f"Unknown ({sim:.2f})"
 
-            # ── Draw Bounding Box ──
-            cv2.rectangle(frame_bgr, (x1, y1), (x2, y2), color, 2)
-
-            # ── Draw Label ──
-            cv2.putText(frame_bgr, label, (x1, y1 - 8),
+            # ── Draw on RGB frame for correct monitor colors ──
+            cv2.rectangle(frame_rgb, (x1, y1), (x2, y2), color, 2)
+            cv2.putText(frame_rgb, label, (x1, y1 - 8),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
 
         # ── Calculate FPS ──
@@ -417,26 +419,26 @@ try:
         fps_smooth = 0.9 * fps_smooth + 0.1 / max(now - t_prev, 0.001)
         t_prev = now
 
-        # ── Draw Status Info ──
-        cv2.putText(frame_bgr, f"FPS: {fps_smooth:.1f}  Faces: {len(faces)}", (8, 22),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-        cv2.putText(frame_bgr, f"Mode: {mode}", (8, 45),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 0), 2)
+        # ── Draw Status Info on RGB frame ──
+        cv2.putText(frame_rgb, f"FPS: {fps_smooth:.1f}  Faces: {len(faces)}", (8, 22),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)  # Yellow in RGB
+        cv2.putText(frame_rgb, f"Mode: {mode}", (8, 45),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)  # Cyan in RGB
 
         if verify_timer > 0:
             n, s = verify_result
-            c = (0, 255, 0) if n != "Unknown" else (0, 0, 255)
-            cv2.putText(frame_bgr, f"{n} ({s:.3f})", (8, 68),
+            c = (0, 255, 0) if n != "Unknown" else (255, 0, 0)  # RGB colors
+            cv2.putText(frame_rgb, f"{n} ({s:.3f})", (8, 68),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, c, 2)
             verify_timer -= 1
 
         if mode == "ADD" and add_name:
-            cv2.putText(frame_bgr, f"Adding: {add_name}", (8, frame_bgr.shape[0] - 10),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 2)
+            cv2.putText(frame_rgb, f"Adding: {add_name}", (8, frame_rgb.shape[0] - 10),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 165, 0), 2)  # Orange in RGB
 
-        # ── Display Frame ──
-        # OpenCV imshow expects BGR - perfect, we already have BGR!
-        cv2.imshow("Face Recognition - RPi4", frame_bgr)
+        # ── Display Frame with CORRECT COLORS ──
+        # OpenCV imshow with RGB frame shows correct colors on monitor!
+        cv2.imshow("Face Recognition - RPi4", frame_rgb)
 
         # ── Handle Keyboard Input ──
         key = cv2.waitKey(1) & 0xFF
