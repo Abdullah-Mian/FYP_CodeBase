@@ -1,0 +1,13 @@
+sudo raspi-config
+# Interface Options → Serial Port
+# Login shell over serial: NO
+# Serial port hardware: YES
+# Reboot
+
+
+python3 -m venv --system-site-packages venv
+source venv/bin/activate
+
+pip3 install pyserial numpy
+
+python3 rpi4_audio_receiver.py
