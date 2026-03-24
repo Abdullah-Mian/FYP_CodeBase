@@ -1,0 +1,11 @@
+[package]
+name = "voice_sentry"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ort = { version = "2.0.0-rc.9", features = ["ndarray", "load-dynamic"] }
+ndarray = "0.16"
+cpal = "0.15"
+anyhow = "1.0"
+hound = "3.5"
