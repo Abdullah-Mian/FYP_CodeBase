@@ -1,0 +1,4 @@
+LD_LIBRARY_PATH=./onnxruntime-linux-aarch64-1.23.1/lib ./voice_sentry verify
+
+LD_LIBRARY_PATH=./onnxruntime-linux-aarch64-1.23.1/lib ./voice_sentry enroll
+
