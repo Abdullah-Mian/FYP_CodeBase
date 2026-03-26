@@ -8,3 +8,8 @@ pip install -r requirements.txt
 
 pip install adafruit-blinka adafruit-circuitpython-rgb-display
 pip install mediapipe
+
+
+ # ========= To execute
+source venv/bin/activate
+python mfn_tft_fscreen_Colorfix.py
