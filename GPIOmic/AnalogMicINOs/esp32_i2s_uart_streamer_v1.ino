@@ -20,7 +20,7 @@
 #include "esp_sleep.h"
 
 // ================= UART to Pi =================
-#define UART_BAUD     921600
+#define UART_BAUD     460800
 #define UART_TX_PIN   17   // ESP32 TX2 -> Pi RXD
 
 // ================= Wake pin (from KY-037 D0) =================
