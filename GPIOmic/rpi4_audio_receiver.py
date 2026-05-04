@@ -31,7 +31,7 @@ from datetime import datetime
 
 # ==================== CONFIGURATION ====================
 SERIAL_PORT = "/dev/serial0"   # RPi4 UART
-BAUD_RATE = 921600
+BAUD_RATE = 460800
 SAMPLE_RATE = 16000
 CHANNELS = 1
 SAMPLE_WIDTH = 2               # 16-bit = 2 bytes
