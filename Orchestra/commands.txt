@@ -1,0 +1,4 @@
+python3 -m venv biometric_venv
+source biometric_venv/bin/activate
+pip install websockets zeroconf picamera2 mediapipe onnxruntime pyserial psutil opencv-python-headless pillow adafruit-circuitpython-rgb-display
+python server.py
