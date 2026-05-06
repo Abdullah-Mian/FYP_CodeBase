@@ -1,4 +1,24 @@
-python3 -m venv biometric_venv
-source biometric_venv/bin/activate
-pip install websockets zeroconf picamera2 mediapipe onnxruntime pyserial psutil opencv-python-headless pillow adafruit-circuitpython-rgb-display
+python3 -m venv --system-site-packages venv
+source venv/bin/activate
+
+sudo apt-get install libcap-dev
+
+pip install adafruit-blinka adafruit-circuitpython-rgb-display
+pip install mediapipe
+pip3 install onnxruntime pyserial psutil
+pip install websockets zeroconf
+
 python server.py
+
+
+# 1. Copy the service file
+sudo cp biometric.service /etc/systemd/system/
+
+# 2. Reload systemd so it sees the new file
+sudo systemctl daemon-reload
+
+# 3. Enable it (runs on every boot from now on)
+sudo systemctl enable biometric.service
+
+# 4. Start it right now without rebooting
+sudo systemctl start biometric.service
