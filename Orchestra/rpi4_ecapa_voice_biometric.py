@@ -82,10 +82,10 @@ N_MELS     = 80
 #    Beyond 6 s the score rarely changes by more than 0.01-0.02 on RPi
 #    while inference latency grows linearly with more frames.
 #
-ENROLL_MIN_S = 8.0
+ENROLL_MIN_S = 5.0
 ENROLL_MAX_S = 10.0
-VERIFY_MIN_S = 6.0
-VERIFY_MAX_S = 8.0
+VERIFY_MIN_S = 2.0
+VERIFY_MAX_S = 6.0
 
 # Cosine similarity decision thresholds
 VERIFY_THRESHOLD    = 0.70   # score >= this -> MATCH

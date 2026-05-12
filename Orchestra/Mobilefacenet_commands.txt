@@ -9,5 +9,3 @@ pip install -r requirements.txt
 pip install adafruit-blinka adafruit-circuitpython-rgb-display
 pip install mediapipe
 
-pip3 install onnxruntime pyserial psutil
-pip install websockets zeroconf

@@ -174,6 +174,7 @@ def face_worker_process(cmd_q: Queue, res_q: Queue, busy_evt: Event,
     # ── helpers ───────────────────────────────────────────────────────────────
     def _handle_command(cmd: dict) -> dict:
         """Execute one command dict; return result dict."""
+        nonlocal db   # needed by the reload_db branch
         op   = cmd.get("op")
         name = cmd.get("name", "").strip()
 
@@ -219,7 +220,6 @@ def face_worker_process(cmd_q: Queue, res_q: Queue, busy_evt: Event,
             return {"status": "success", "data": list(db.keys())}
 
         elif op == "reload_db":
-            nonlocal db
             db = load_database()
             return {"status": "success", "count": len(db)}
 
