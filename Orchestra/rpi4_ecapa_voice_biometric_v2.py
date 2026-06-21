@@ -270,11 +270,18 @@ class UARTReceiver:
 
     # ---- public API ----------------------------------------------------------
 
-    def receive_session(self, min_seconds, max_seconds, label="audio"):
+    def receive_session(self, min_seconds, max_seconds, label="audio",
+                        on_start=None):
         """
         Block until a complete audio session arrives.
         Enforces min_seconds (reject if shorter) and max_seconds (truncate).
         Returns raw PCM bytes, or None on failure / audio too short.
+
+        on_start: optional zero-arg callback fired exactly once, the
+        instant the first real audio frame arrives (i.e. the clap that
+        triggered the ESP32 to start streaming). Lets the caller flip a
+        TFT display from a standby/"clap to start" message straight to
+        "Listening...", in lockstep with when audio actually begins.
         """
         # ---- GLITCH FIX: flush stale bytes from previous session ------------
         self._ser.reset_input_buffer()
@@ -294,7 +301,12 @@ class UARTReceiver:
             if frame is None:
                 if started and accum:
                     break     # timeout after data -> end session
-                continue      # timeout before first frame -> keep waiting
+                # Nobody has started talking yet within this read's
+                # timeout window. Give up THIS attempt instead of
+                # looping forever -- the caller (voice_worker_process's
+                # autonomous loop) needs control back so it can check
+                # cmd_q for a queued command (delete/enroll/verify/...).
+                return None   # caller treats this exactly like "no audio"
 
             if frame == b'':
                 if accum:
@@ -304,6 +316,11 @@ class UARTReceiver:
             if not started:
                 started = True
                 print(f"[UART] Session started  {datetime.now().strftime('%H:%M:%S')}")
+                if on_start is not None:
+                    try:
+                        on_start()
+                    except Exception as _e:
+                        print(f"[UART] on_start callback error (ignored): {_e}")
 
             accum.extend(frame)
             dur = len(accum) / (SAMPLE_RATE * SAMPLE_WIDTH)
