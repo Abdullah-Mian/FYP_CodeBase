@@ -29,7 +29,7 @@ Type=simple
 User=faizy
 Group=faizy
 
-WorkingDirectory=/home/faizy/Downloads/Orchestra
+WorkingDirectory=/home/faizy/Documents/FYP_CodeBase/Orchestra/
 
 # Use the conda env Python directly — no 'conda activate' needed
 ExecStart=/home/faizy/miniconda3/envs/orchestra_env/bin/python Orchestra.py
