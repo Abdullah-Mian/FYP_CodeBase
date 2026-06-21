@@ -1,0 +1,38 @@
+[Unit]
+Description=Camera TFT Display System
+Documentation=https://github.com/yourusername/camera-tft-system
+After=multi-user.target
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=faizy
+Group=faizy
+WorkingDirectory=/home/faizy/Documents/TFT_LCD
+
+# Environment variables
+Environment="PYTHONUNBUFFERED=1"
+Environment="DISPLAY=:0"
+Environment="XAUTHORITY=/home/faizy/.Xauthority"
+
+# Main execution command
+ExecStart=/home/faizy/Documents/TFT_LCD/env/bin/python /home/faizy/Documents/TFT_LCD/main_cam.py
+
+# Restart policy - critical for robustness
+Restart=always
+RestartSec=10
+StartLimitInterval=200
+StartLimitBurst=5
+
+# Logging configuration
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=camera-system
+
+# Security hardening (optional but recommended)
+# NoNewPrivileges=true
+# PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
