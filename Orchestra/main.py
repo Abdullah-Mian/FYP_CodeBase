@@ -53,8 +53,23 @@ MIN_SCORE_GAP = 0.10
 # authentication is enabled.
 MIN_GALLERY_SIZE = 2
 
+# ── Enrollment duplicate-identity guard ──────────────────────
+# If a NEW enrollment embedding scores >= this against any EXISTING
+# enrolled identity, refuse to save it. This stops the same physical
+# face being registered twice under two different names — which is
+# exactly the scenario that causes false-positive grants later,
+# because two near-identical templates in the DB will both score
+# high on the same live face and the verify-time gap-check may not
+# reliably tell them apart.
+ENROLL_DUPLICATE_THRESHOLD = 0.80
+
 # ── Database ─────────────────────────────────────────────────
 DATABASE_FILE = "faces_db.pkl"
+
+# ── Multi-face guard ──────────────────────────────────────────
+# If more than this many faces are visible in frame, refuse to
+# enroll/verify and ask the user to keep only one face in view.
+MAX_FACES_IN_FRAME = 1
 
 # ── Countdown before capture ─────────────────────────────────
 COUNTDOWN_SECONDS = 3
@@ -160,29 +175,18 @@ class TFTDisplay:
             self.font = ImageFont.load_default()
         print("✅ TFT Display initialised")
 
-    def show_frame(self, frame, faces=None, status="", fps=0.0):
-        # Fix mirror: flip the preview frame horizontally so it looks natural
-        img = cv2.flip(frame, 1)
-        img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-
-        # Bounding boxes also need to be mirrored since we flipped the frame
-        if faces:
-            frame_w = frame.shape[1]
-            for (x, y, w, h) in faces:
-                flipped_x = frame_w - x - w
-                cv2.rectangle(img, (flipped_x, y),
-                              (flipped_x + w, y + h), (0, 255, 0), 2)
-
-        label = f"FPS:{fps:.0f}" + (f" | {status}" if status else "")
-
+    @staticmethod
+    def _status_color(status: str):
         # NOTE: This display pipeline does RGB→BGR then sends as mode="RGB",
         # which swaps R and B channels on screen. Green is symmetric so it
         # is unaffected. For other colors R and B are intentionally swapped here.
-        if "CLOSER" in status:
+        if "MULTIPLE" in status or "TOO CLOSE" in status:
+            color = (255, 0, 255)    # appears MAGENTA on screen
+        elif "CLOSER" in status:
             color = (255, 0, 0)      # appears RED on screen
         elif "GRANTED" in status:
             color = (0, 255, 0)      # appears GREEN on screen
-        elif "DENIED" in status:
+        elif "DENIED" in status or "UNKNOWN" in status:
             color = (255, 0, 0)      # appears RED on screen
         elif "CAPTURING" in status:
             color = (255, 255, 0)    # appears CYAN on screen
@@ -190,10 +194,48 @@ class TFTDisplay:
             color = (0, 255, 255)    # appears YELLOW on screen
         else:
             color = (255, 255, 255)  # WHITE
+        return color
 
-        cv2.putText(img, label, (2, 12), cv2.FONT_HERSHEY_SIMPLEX,
-                    0.4, color, 1)
-        self.disp.image(Image.fromarray(img, mode="RGB"))
+    def show_frame(self, frame, faces=None, status="", fps=0.0,
+                   voice_status=""):
+        """
+        Render the camera preview with two text rows ABOVE the image:
+          row 1: face/system status (+ FPS)
+          row 2: voice status (whatever the voice worker last reported)
+        The panel is a fixed DISPLAY_WIDTH x DISPLAY_HEIGHT buffer, so the
+        camera image is shrunk vertically to make room for a text strip —
+        we never exceed the physical panel size.
+        """
+        # Fix mirror: flip the preview frame horizontally so it looks natural
+        cam_img = cv2.flip(frame, 1)
+        cam_img = cv2.cvtColor(cam_img, cv2.COLOR_RGB2BGR)
+
+        # Bounding boxes also need to be mirrored since we flipped the frame
+        if faces:
+            frame_w = frame.shape[1]
+            for (x, y, w, h) in faces:
+                flipped_x = frame_w - x - w
+                cv2.rectangle(cam_img, (flipped_x, y),
+                              (flipped_x + w, y + h), (0, 255, 0), 2)
+
+        TEXT_STRIP_H = 28   # px reserved above the camera image for 2 text rows
+        cam_h = DISPLAY_HEIGHT - TEXT_STRIP_H
+        if cam_img.shape[0] != cam_h or cam_img.shape[1] != DISPLAY_WIDTH:
+            cam_img = cv2.resize(cam_img, (DISPLAY_WIDTH, cam_h),
+                                 interpolation=cv2.INTER_LINEAR)
+
+        canvas = np.zeros((DISPLAY_HEIGHT, DISPLAY_WIDTH, 3), dtype=np.uint8)
+        canvas[TEXT_STRIP_H:, :, :] = cam_img
+
+        face_label  = f"FPS:{fps:.0f}" + (f" | {status}" if status else "")
+        voice_label = f"VOICE: {voice_status}" if voice_status else "VOICE: —"
+
+        cv2.putText(canvas, face_label, (2, 11), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.35, self._status_color(status), 1)
+        cv2.putText(canvas, voice_label, (2, 24), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.35, self._status_color(voice_status), 1)
+
+        self.disp.image(Image.fromarray(canvas, mode="RGB"))
 
     def clear(self):
         self.disp.image(
@@ -341,21 +383,38 @@ def _embed_aligned(aligned_rgb: np.ndarray,
 # ============================================================
 # Preview countdown  (preview mode — NO camera switch)
 # ============================================================
-def _wait_countdown(camera, detector, display, seconds=COUNTDOWN_SECONDS):
+def _wait_countdown(camera, detector, display, seconds=COUNTDOWN_SECONDS,
+                    voice_status_fn=None, abort_fn=None):
     """
     Runs entirely in preview mode.
     Shows MOVE CLOSER if face is too small — resets countdown timer.
-    Returns only when face is present, close enough, and countdown has elapsed.
+    Shows MULTIPLE FACES if more than MAX_FACES_IN_FRAME faces are seen —
+    resets countdown and refuses to proceed until only one face remains.
+    Returns "ok" once a single face is present, close enough, and the
+    countdown has elapsed. Returns "abort" if abort_fn() becomes True
+    (used so the autonomous loop can bail out early if a new command
+    arrives while we're waiting).
+
+    voice_status_fn, if given, is called every frame to fetch the latest
+    voice-worker status line so it keeps being displayed on the TFT even
+    while the face pipeline is busy with its own countdown.
     """
     face_since = None
     while True:
+        if abort_fn is not None and abort_fn():
+            return "abort"
+
         ok, frame = camera.read_preview()
         if not ok:
             continue
         detects = detector.detect_with_landmarks(frame)
         faces   = [d["box"] for d in detects]
+        vstatus = voice_status_fn() if voice_status_fn else ""
 
-        if faces:
+        if len(faces) > MAX_FACES_IN_FRAME:
+            face_since = None   # reset countdown — ambiguous scene
+            status = "MULTIPLE FACES - SHOW ONE ONLY"
+        elif faces:
             bx, by, bw, bh = max(faces, key=lambda f: f[2] * f[3])
             if bw < MIN_FACE_PREVIEW_PX or bh < MIN_FACE_PREVIEW_PX:
                 face_since = None   # reset countdown — too far away
@@ -366,20 +425,22 @@ def _wait_countdown(camera, detector, display, seconds=COUNTDOWN_SECONDS):
                 remaining = seconds - int(time.time() - face_since)
                 if remaining <= 0:
                     display.show_frame(frame, faces=faces,
-                                       status="CAPTURING…")
-                    return
+                                       status="CAPTURING…",
+                                       voice_status=vstatus)
+                    return "ok"
                 status = f"HOLD STILL  {remaining}s…"
         else:
             face_since = None
             status = "SHOW FACE"
 
-        display.show_frame(frame, faces=faces, status=status)
+        display.show_frame(frame, faces=faces, status=status,
+                           voice_status=vstatus)
 
 
 # ============================================================
 # ENROLLMENT  — single capture, one embedding
 # ============================================================
-def enroll_face(camera, detector, display):
+def enroll_face(camera, detector, display, voice_status_fn=None):
     """
     Capture exactly ONE hi-res frame, align it, embed it.
     Returns a single L2-normalised 128-D numpy array, or None on failure.
@@ -389,10 +450,17 @@ def enroll_face(camera, detector, display):
         — the distance-from-camera and alignment quality matter far more
         than averaging multiple embeddings.
       - One clean, close, front-facing, aligned capture is the best template.
+
+    Refuses to proceed (returns None) if more than one face is visible,
+    either during the preview countdown or in the final hi-res frame.
     """
     print("\n🧾  Enrollment — single capture")
     print("    Stand close, face the camera straight on.")
-    _wait_countdown(camera, detector, display, seconds=COUNTDOWN_SECONDS)
+    outcome = _wait_countdown(camera, detector, display,
+                              seconds=COUNTDOWN_SECONDS,
+                              voice_status_fn=voice_status_fn)
+    if outcome != "ok":
+        return None
 
     print("  📷  Switching to hi-res…")
     camera._to_hires()
@@ -406,7 +474,12 @@ def enroll_face(camera, detector, display):
             print("❌  No face detected in hi-res frame.")
             return None
 
-        best = max(detects, key=lambda d: d["box"][2] * d["box"][3])
+        if len(detects) > MAX_FACES_IN_FRAME:
+            print(f"❌  {len(detects)} faces detected — keep only one face "
+                  f"in frame and try again.")
+            return None
+
+        best = detects[0]
         bx, by, bw, bh = best["box"]
 
         if bw < MIN_FACE_CROP_PX or bh < MIN_FACE_CROP_PX:
@@ -431,12 +504,20 @@ def enroll_face(camera, detector, display):
 # ============================================================
 # VERIFICATION  — single capture, one embedding
 # ============================================================
-def capture_probe(camera, detector, display):
+def capture_probe(camera, detector, display, voice_status_fn=None,
+                  abort_fn=None):
     """
     Capture exactly ONE hi-res frame for verification.
-    Returns a single L2-normalised embedding, or None on failure.
+    Returns a single L2-normalised embedding, or None on failure
+    (including: multiple faces present, no face, face too small, or
+    the wait being aborted because a new command pre-empted it).
     """
-    _wait_countdown(camera, detector, display, seconds=2)
+    outcome = _wait_countdown(camera, detector, display, seconds=2,
+                              voice_status_fn=voice_status_fn,
+                              abort_fn=abort_fn)
+    if outcome != "ok":
+        return None
+
     print("  📷  Capturing probe…")
     camera._to_hires()
     embedding = None
@@ -449,7 +530,12 @@ def capture_probe(camera, detector, display):
             print("  ⚠️  No face in probe frame.")
             return None
 
-        best = max(detects, key=lambda d: d["box"][2] * d["box"][3])
+        if len(detects) > MAX_FACES_IN_FRAME:
+            print(f"  ⚠️  {len(detects)} faces detected in probe — "
+                  f"keep only one face in frame.")
+            return None
+
+        best = detects[0]
         bx, by, bw, bh = best["box"]
 
         if bw < MIN_FACE_CROP_PX or bh < MIN_FACE_CROP_PX:
@@ -519,8 +605,37 @@ def match_probe(probe: np.ndarray, db: dict):
 
 
 # ============================================================
-# Main loop
+# ENROLLMENT DUPLICATE-IDENTITY GUARD
 # ============================================================
+def check_enrollment_duplicate(embedding: np.ndarray, db: dict):
+    """
+    Before saving a new enrollment, compare it against every EXISTING
+    enrolled identity. If it scores too close to an existing different
+    person, refuse — this is what stops the same face being registered
+    twice under two names, which is the root cause of false-positive
+    grants later (two near-identical templates both score high on the
+    same live face).
+
+    Returns (ok: bool, best_name: str, best_score: float)
+      ok=False means: reject this enrollment, do not save it.
+    """
+    if not db:
+        return True, "—", 0.0
+
+    probe = l2_normalize(embedding)
+    best_name, best_score = None, -1.0
+    for name, template in db.items():
+        tmpl  = l2_normalize(np.asarray(template, dtype=np.float32))
+        score = float(np.dot(probe, tmpl))
+        if score > best_score:
+            best_name, best_score = name, score
+
+    if best_score >= ENROLL_DUPLICATE_THRESHOLD:
+        return False, best_name, best_score
+    return True, best_name, best_score
+
+
+
 def main():
     print("=" * 60)
     print("  Raspberry Pi 4  ·  Face Recognition  ·  MobileFaceNet")
@@ -574,17 +689,25 @@ def main():
                 print("=" * 60)
                 embedding = enroll_face(camera, detector, display)
                 if embedding is not None:
-                    name = input("\n👤  Enter name: ").strip()
-                    if name:
-                        db[name] = embedding
-                        save_database(db)
-                        print(f"✨  Registered '{name}'")
-                        print(f"📊  DB total: {len(db)} identities")
-                        if len(db) < MIN_GALLERY_SIZE:
-                            print(f"⚠️  Enroll at least {MIN_GALLERY_SIZE} "
-                                  f"people before using VERIFY.")
+                    dup_ok, dup_name, dup_score = check_enrollment_duplicate(
+                        embedding, db)
+                    if not dup_ok:
+                        print(f"❌  Rejected — this face matches existing "
+                              f"identity '{dup_name}' at {dup_score:.4f} "
+                              f"(>= {ENROLL_DUPLICATE_THRESHOLD}). "
+                              f"Refusing to enroll the same person twice.")
                     else:
-                        print("⚠️  Empty name — cancelled.")
+                        name = input("\n👤  Enter name: ").strip()
+                        if name:
+                            db[name] = embedding
+                            save_database(db)
+                            print(f"✨  Registered '{name}'")
+                            print(f"📊  DB total: {len(db)} identities")
+                            if len(db) < MIN_GALLERY_SIZE:
+                                print(f"⚠️  Enroll at least {MIN_GALLERY_SIZE} "
+                                      f"people before using VERIFY.")
+                        else:
+                            print("⚠️  Empty name — cancelled.")
                 else:
                     print("❌  Enrollment failed.")
                 print("=" * 60 + "\n")
