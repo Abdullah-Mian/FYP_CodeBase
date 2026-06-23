@@ -78,18 +78,6 @@ CORE_VOICE  = {2}
 AUTO_FACE_RETRY_S   = 2.0     # retry period while face is UNKNOWN/DENIED
 GRANTED_IOU_THRESH  = 0.3     # IOU above this => treat as "still same face"
 
-# How long a GRANTED/DENIED/error message stays on the TFT before the voice
-# worker goes back to "Listening…". Without this hold, the autonomous loop
-# overwrites the result almost instantly and it is never actually readable.
-VOICE_RESULT_HOLD_S = 2.5
-
-# Standby label shown on the TFT while the voice worker is waiting for a
-# clap to trigger the ESP32 into streaming audio (i.e. before any session
-# has started). The instant real audio starts arriving, the display flips
-# to "Listening..." via UARTReceiver.receive_session()'s on_start callback
-# -- so the screen never claims to be listening before a clap happened.
-VOICE_STANDBY_TEXT = "Clap to start voice"
-
 
 
 def _pin(cores: set):
@@ -231,7 +219,7 @@ def face_worker_process(cmd_q: Queue, res_q: Queue, busy_evt: Event,
         """Execute one command dict; return result dict."""
         nonlocal db   # needed by the reload_db branch
         op   = cmd.get("op")
-        name = cmd.get("name", "").strip().lower()   # match voice worker's casing
+        name = cmd.get("name", "").strip()
 
         if op == "enroll":
             if not name:
@@ -548,11 +536,9 @@ def voice_worker_process(cmd_q: Queue, res_q: Queue, busy_evt: Event,
                 _set_voice(f"Enroll '{name}' FAILED — already exists")
                 return {"status": "error",
                         "message": f"'{name}' already enrolled. Delete first."}
-            _set_voice(f"Enrolling '{name}' — {VOICE_STANDBY_TEXT}")
-            raw = uart.receive_session(
-                ENROLL_MIN_S, ENROLL_MAX_S,
-                label=f"enrollment '{name}'",
-                on_start=lambda: _set_voice(f"Enrolling '{name}' — speak now…"))
+            _set_voice(f"Enrolling '{name}' — speak now…")
+            raw = uart.receive_session(ENROLL_MIN_S, ENROLL_MAX_S,
+                                       label=f"enrollment '{name}'")
             if raw is None:
                 _set_voice(f"Enroll '{name}' FAILED — no audio")
                 return {"status": "error", "message": "No audio received"}
@@ -579,11 +565,9 @@ def voice_worker_process(cmd_q: Queue, res_q: Queue, busy_evt: Event,
             if not speakers:
                 _set_voice("Verify FAILED — no speakers enrolled")
                 return {"status": "error", "message": "No speakers enrolled"}
-            _set_voice(f"Verify — {VOICE_STANDBY_TEXT}")
-            raw = uart.receive_session(
-                VERIFY_MIN_S, VERIFY_MAX_S,
-                label="verification",
-                on_start=lambda: _set_voice("Listening for verification…"))
+            _set_voice("Listening for verification…")
+            raw = uart.receive_session(VERIFY_MIN_S, VERIFY_MAX_S,
+                                       label="verification")
             if raw is None:
                 _set_voice("Verify FAILED — no audio")
                 return {"status": "error", "message": "No audio received"}
@@ -648,27 +632,25 @@ def voice_worker_process(cmd_q: Queue, res_q: Queue, busy_evt: Event,
             # UARTReceiver.receive_session() blocks for up to RECEIVE_TIMEOUT_S
             # waiting for a frame.  We use the short verify window so the loop
             # re-checks cmd_q every ~VERIFY_MAX_S seconds.
-            log.debug("[VOICE][AUTO] Waiting for clap…")
-            _set_voice(VOICE_STANDBY_TEXT)
+            log.debug("[VOICE][AUTO] Listening on UART…")
+            _set_voice("Listening…")
             raw = uart.receive_session(
                 min_seconds=VERIFY_MIN_S,
                 max_seconds=VERIFY_MAX_S,
-                label="auto-identify",
-                on_start=lambda: _set_voice("Listening…"))
+                label="auto-identify")
 
             # If a command arrived while we were blocking, skip inference
             if not cmd_q.empty():
                 continue
 
             if raw is None:
-                _set_voice(VOICE_STANDBY_TEXT)
+                _set_voice("Idle")
                 continue   # timeout / short session — loop again
 
             speakers = enrolled_speakers()
             if not speakers:
                 log.debug("[VOICE][AUTO] No speakers enrolled — skipping")
                 _set_voice("No speakers enrolled")
-                time.sleep(VOICE_RESULT_HOLD_S)
                 continue
 
             _set_voice("Processing…")
@@ -677,7 +659,6 @@ def voice_worker_process(cmd_q: Queue, res_q: Queue, busy_evt: Event,
             except ValueError as e:
                 log.warning("[VOICE][AUTO] Quality fail: %s", e)
                 _set_voice(f"Audio quality issue — {e}")
-                time.sleep(VOICE_RESULT_HOLD_S)
                 continue
 
             best_name, best_score = _best_match(emb)
@@ -687,7 +668,6 @@ def voice_worker_process(cmd_q: Queue, res_q: Queue, busy_evt: Event,
             _log_event(shared_logs, "voice",
                        f"[AUTO] {tag} {best_name} score={best_score:.4f}")
             _set_voice(f"{tag}: {best_name or 'unknown'} ({best_score:.2f})")
-            time.sleep(VOICE_RESULT_HOLD_S)
 
     except KeyboardInterrupt:
         pass

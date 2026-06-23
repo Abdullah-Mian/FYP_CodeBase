@@ -121,7 +121,6 @@ class BiometricClient(App):
         self.ws:         websockets.WebSocketClientProtocol | None = None
         self.server_url: str | None = None
         self._cmd_lock  = asyncio.Lock()   # one in-flight command at a time
-        self._reconnecting = False         # guards against stacked reconnect loops
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -145,8 +144,9 @@ class BiometricClient(App):
                 yield Button("Delete User",             id="btn-delete", variant="error")
 
                 yield Static("◈ SYSTEM", classes="section-label")
-                yield Button("Fetch System Logs", id="btn-logs",   variant="warning")
-                yield Button("Clear Event Log",   id="btn-clear",  variant="default")
+                yield Button("Fetch System Logs", id="btn-logs",      variant="warning")
+                yield Button("Clear Event Log",   id="btn-clear",     variant="default")
+                yield Button("⟳ Reconnect",       id="btn-reconnect", variant="primary")
 
             # ── Main panel ────────────────────────────────────────────────────
             with Vertical(id="main-area"):
@@ -196,27 +196,6 @@ class BiometricClient(App):
             self._set_status("OFFLINE", "offline")
             self._log(f"[red]Connection failed: {exc}[/red]")
 
-    async def _reconnect_loop(self):
-        """
-        Retry the last known server URL every 5s until back online.
-        Without this, a single Wi-Fi blip or Pi reboot leaves the TUI
-        stuck OFFLINE forever, even though Orchestra.py itself will have
-        come back up — since this is meant to run unattended on boot,
-        the client needs to recover on its own.
-        """
-        if self._reconnecting or not self.server_url:
-            return
-        self._reconnecting = True
-        try:
-            while self.ws is None:
-                await asyncio.sleep(5.0)
-                if self.ws is not None:
-                    return
-                self._log("[yellow]Reconnecting…[/yellow]")
-                await self._connect()
-        finally:
-            self._reconnecting = False
-
     # ── Low-level send/receive ────────────────────────────────────────────────
     async def _send(self, payload: dict) -> dict | None:
         """
@@ -229,7 +208,10 @@ class BiometricClient(App):
         try:
             await self.ws.send(json.dumps(payload))
             while True:
-                raw = await asyncio.wait_for(self.ws.recv(), timeout=90.0)
+                # 120s ceiling: a face+voice "register" runs two capture windows
+                # back-to-back. Progress heartbeats from the server reset this
+                # timer on every message, so this only fires on a genuine stall.
+                raw = await asyncio.wait_for(self.ws.recv(), timeout=120.0)
                 msg = json.loads(raw)
                 if msg.get("status") == "progress":
                     step = msg.get("step", "").upper()
@@ -238,13 +220,16 @@ class BiometricClient(App):
                 else:
                     return msg
         except asyncio.TimeoutError:
-            self._log("[red]Request timed out (90 s).[/red]")
+            self._log("[red]Request timed out (120 s).[/red]")
             return None
         except (ConnectionClosed, WebSocketException) as exc:
             self._set_status("OFFLINE", "offline")
             self.ws = None
+            # Forget this server in the discovery listener so mDNS can
+            # re-announce and we can auto-reconnect (RPi Wi-Fi drops are common).
+            if self.server_url:
+                self._listener._seen.discard(self.server_url)
             self._log(f"[red]Connection lost: {exc}[/red]")
-            self.run_worker(self._reconnect_loop(), name="reconnect")
             return None
         except Exception as exc:
             self._log(f"[red]Unexpected error: {exc}[/red]")
@@ -276,7 +261,7 @@ class BiometricClient(App):
                 voice_err = res.get("voice", {}).get("message", "")
                 self._log(
                     f"[{'green' if face_ok and voice_ok else 'yellow'}]"
-                    f"  Face:  {'✓ enrolled' if face_ok  else f'✗ {face_err}'}\\n"
+                    f"  Face:  {'✓ enrolled' if face_ok  else f'✗ {face_err}'}\n"
                     f"  Voice: {'✓ enrolled' if voice_ok else f'✗ {voice_err}'}[/]"
                 )
                 self.notify(
@@ -412,6 +397,27 @@ class BiometricClient(App):
         elif btn == "btn-clear":
             self.query_one("#log-area", RichLog).clear()
 
+        # ──────────────────────────────────────────────────────────────────────
+        # RECONNECT  (manual recovery after a Wi-Fi/network drop)
+        # ──────────────────────────────────────────────────────────────────────
+        elif btn == "btn-reconnect":
+            self._log("[yellow]Reconnecting…[/yellow]")
+            # Drop any half-open socket.
+            if self.ws is not None:
+                try:
+                    await self.ws.close()
+                except Exception:
+                    pass
+                self.ws = None
+            # Forget discovered servers so mDNS can re-announce them.
+            self._listener._seen.clear()
+            self._set_status("SEARCHING…", "searching")
+            if self.server_url:
+                # We already know an address — try it straight away.
+                self._kick_connect()
+            else:
+                self._log("[yellow]Waiting for server via mDNS…[/yellow]")
+
     # ── Enroll result helper ──────────────────────────────────────────────────
     def _show_enroll_result(self, res: dict | None, modality: str, name: str):
         if res is None:
@@ -458,81 +464,59 @@ class BiometricClient(App):
     def _render_log_entry(self, entry: dict):
         """
         Parses an Orchestra log entry:
-          {"time": "19:23:45", "worker": "face"|"voice"|"server",
+          {"time": "19:23:45", "worker": "face"|"voice",
            "event": "GRANTED Alice score=0.8920"}
-          or, from the autonomous loop (the majority of entries):
-          {"event": "[AUTO] GRANTED Alice score=0.8920"}
 
         Displays: timestamp · worker · status · user · confidence score
-
-        NOTE: the original parser didn't strip the "[AUTO] " prefix before
-        tokenising, so for every autonomous entry (most of them) it picked
-        "GRANTED"/"DENIED" itself as the username and mangled the status.
-        That's fixed below by stripping "[AUTO] " first and parsing the
-        remaining body — same logic, just applied to the right substring.
         """
         ts      = entry.get("time",   "?")
         worker  = (entry.get("worker") or "?").upper()
         event   = entry.get("event",  "").strip()
 
-        # System/orchestrator entries ("System startup", etc.) have no
-        # user/score to extract — just show them as-is.
-        if worker not in ("FACE", "VOICE"):
-            self._log(f"[dim]  {ts}  {worker:<6}  {event}[/dim]")
-            return
-
-        is_auto = event.startswith("[AUTO]")
-        body    = event[len("[AUTO]"):].strip() if is_auto else event
-        upper   = body.upper()
-
+        # ── Parse event string ─────────────────────────────────────────────
+        # Formats seen from Orchestra:
+        #   "GRANTED Alice score=0.8920"
+        #   "DENIED  Alice score=0.4500"
+        #   "AMBIGUOUS Alice score=0.7800 ..."
+        #   "Enrolled 'Alice'"
+        #   "Deleted  'Alice'"
         status     = "—"
         user       = "—"
         score_str  = "—"
         color      = "dim"
 
-        if upper.startswith("GRANTED"):
+        if event.upper().startswith("GRANTED"):
             status = "GRANTED"
             color  = "green"
-        elif upper.startswith("DENIED") or upper.startswith("AMBIGUOUS"):
-            status = body.split()[0].upper()
+        elif event.upper().startswith("DENIED") or event.upper().startswith("AMBIGUOUS"):
+            status = event.split()[0].upper()
             color  = "red"
-        elif "rejected" in body.lower():
-            status = "REJECTED"
-            color  = "red"
-        elif body.lower().startswith("enrolled"):
+        elif event.lower().startswith("enrolled"):
             status = "ENROLLED"
             color  = "cyan"
-        elif body.lower().startswith("deleted"):
+        elif event.lower().startswith("deleted"):
             status = "DELETED"
             color  = "yellow"
         else:
-            status = body[:14] if body else "—"
+            status = event[:12]
             color  = "dim"
 
-        # Extract user name. For GRANTED/DENIED/AMBIGUOUS lines the name is
-        # the bare 2nd token ("GRANTED Alice score=..."). For
-        # enrolled/deleted/rejected lines it's the first quoted name
-        # ("Enrolled 'Alice'", "Enroll 'Alice' REJECTED — duplicate of 'Bob'").
-        parts = body.replace("'", "").split()
+        # Extract user name (2nd token, strip quotes)
+        parts = event.replace("'", "").split()
         if len(parts) >= 2:
             user = parts[1]
-        elif parts:
-            user = parts[0]
 
-        # Extract score (looks like "score=0.8920")
+        # Extract score  (looks like "score=0.8920" or a bare float at end)
         for token in parts:
-            if token.lower().startswith("score="):
+            if token.startswith("score="):
                 try:
                     score_str = f"{float(token.split('=')[1]):.4f}"
                 except ValueError:
                     pass
 
-        if is_auto:
-            status = f"AUTO·{status}"
-
         self._log(
             f"[{color}]  {ts}  {worker:<5}  "
-            f"{status:<14}  {user:<20}  {score_str}[/{color}]"
+            f"{status:<10}  {user:<20}  {score_str}[/{color}]"
         )
 
     # ── User table ────────────────────────────────────────────────────────────
