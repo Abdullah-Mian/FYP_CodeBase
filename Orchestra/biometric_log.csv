@@ -393,3 +393,116 @@ timestamp,method,event,user,confidence,second_best_user,second_best_score,reason
 2026-06-25 03:04:22,face,DENIED,junaid,0.2798,faizy,0.0605,score 0.2798 below threshold 0.75,0.0,0.0,auto
 2026-06-25 03:04:30,face,DENIED,faizy,0.5834,junaid,0.5154,score 0.5834 below threshold 0.75,0.0,0.0,auto
 2026-06-25 03:04:40,server,SHUTDOWN,,0.0,,0.0,,0.0,0.0,
+2026-06-25 03:05:34,server,STARTUP,,0.0,,0.0,,0.0,0.0,
+2026-06-25 03:05:57,face,DENIED,faizy,0.6215,junaid,0.5388,score 0.6215 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:06:03,voice,AUTO_VERIFY_SKIPPED,,0.0,,0.0,no_speakers,2.11,0.0,
+2026-06-25 03:06:05,face,DENIED,faizy,0.5557,junaid,0.4533,score 0.5557 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:06:22,face,ATTEMPT_NO_CAPTURE,,0.0,,0.0,,0.0,0.0,auto — probe was None
+2026-06-25 03:06:26,server,CLIENT_CONNECTED,,0.0,,0.0,,0.0,0.0,"('192.168.100.4', 55350)"
+2026-06-25 03:06:35,voice,AUTO_VERIFY_SKIPPED,,0.0,,0.0,no_speakers,2.18,0.0,
+2026-06-25 03:06:40,face,DENIED,junaid,0.5527,faizy,0.5246,score 0.5527 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:06:48,face,DENIED,faizy,0.5145,junaid,0.4522,score 0.5145 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:06:59,face,DENIED,faizy,0.5941,junaid,0.5128,score 0.5941 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:07:09,face,DENIED,junaid,0.6441,faizy,0.5812,score 0.6441 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:07:17,face,DENIED,faizy,0.7489,junaid,0.6127,score 0.7489 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:07:21,voice,ENROLLED,ava,0.0,,0.0,,10.0,6127.2,
+2026-06-25 03:07:29,face,DENIED,faizy,0.6892,junaid,0.5678,score 0.6892 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:07:35,voice,GRANTED,ava,0.9205,,-1.0,,6.0,3592.8,auto
+2026-06-25 03:07:39,face,DENIED,faizy,0.5172,junaid,0.4723,score 0.5172 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:07:50,voice,DENIED,ava,0.2178,,-1.0,below_threshold,6.0,3617.0,auto
+2026-06-25 03:07:54,face,DENIED,faizy,0.7345,junaid,0.6266,score 0.7345 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:08:04,face,DENIED,faizy,0.7467,junaid,0.6512,score 0.7467 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:08:10,voice,GRANTED,ava,0.9382,,-1.0,,6.0,3544.6,auto
+2026-06-25 03:08:17,face,DENIED,faizy,0.5193,junaid,0.4155,score 0.5193 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:08:25,face,DENIED,junaid,0.4076,faizy,0.093,score 0.4076 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:08:34,voice,GRANTED,ava,0.8644,,-1.0,,2.14,1377.5,auto
+2026-06-25 03:08:38,face,DENIED,junaid,0.6411,faizy,0.471,score 0.6411 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:09:45,voice,ENROLLED,abd,0.0,,0.0,,10.0,6006.7,
+2026-06-25 03:09:54,face,DENIED,faizy,0.7088,junaid,0.6932,score 0.7088 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:10:02,face,DENIED,faizy,0.678,junaid,0.6388,score 0.6780 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:10:10,face,DENIED,junaid,0.6349,faizy,0.6213,score 0.6349 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:10:16,voice,GRANTED,ava,0.9274,abd,0.3653,,2.24,1470.9,auto
+2026-06-25 03:10:18,face,ATTEMPT_NO_CAPTURE,,0.0,,0.0,,0.0,0.0,auto — probe was None
+2026-06-25 03:10:27,face,DENIED,junaid,0.3894,faizy,0.0334,score 0.3894 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:10:33,voice,GRANTED,ava,0.9399,abd,0.4005,,6.0,3512.8,auto
+2026-06-25 03:10:36,face,DENIED,faizy,0.5776,junaid,0.5584,score 0.5776 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:10:44,voice,GRANTED,abd,0.7706,ava,0.3341,,3.81,2284.7,auto
+2026-06-25 03:10:47,face,DENIED,junaid,0.6916,faizy,0.5751,score 0.6916 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:10:55,face,DENIED,junaid,0.4212,faizy,0.1183,score 0.4212 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:11:03,face,DENIED,junaid,0.6456,faizy,0.3753,score 0.6456 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:11:12,face,DENIED,junaid,0.5065,faizy,0.239,score 0.5065 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:11:20,face,DENIED,junaid,0.4472,faizy,0.168,score 0.4472 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:11:28,face,DENIED,junaid,0.6699,faizy,0.5172,score 0.6699 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:11:36,face,DENIED,junaid,0.6611,faizy,0.582,score 0.6611 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:11:45,face,DENIED,junaid,0.6197,faizy,0.5576,score 0.6197 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:11:53,face,DENIED,junaid,0.645,faizy,0.3696,score 0.6450 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:12:01,face,DENIED,junaid,0.4367,faizy,0.1232,score 0.4367 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:12:09,face,DENIED,junaid,0.4543,faizy,0.1813,score 0.4543 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:12:18,face,DENIED,junaid,0.3786,faizy,0.0823,score 0.3786 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:12:26,face,DENIED,junaid,0.4172,faizy,0.1408,score 0.4172 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:12:34,face,DENIED,junaid,0.4627,faizy,0.1917,score 0.4627 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:12:42,face,DENIED,junaid,0.3792,faizy,0.202,score 0.3792 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:12:51,face,DENIED,junaid,0.3465,faizy,0.1492,score 0.3465 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:12:59,face,DENIED,junaid,0.6803,faizy,0.5927,score 0.6803 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:13:06,voice,GRANTED,ava,0.8925,abd,0.4836,,6.0,3562.1,auto
+2026-06-25 03:13:07,face,DENIED,junaid,0.4707,faizy,0.4486,score 0.4707 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:13:18,face,DENIED,junaid,0.1996,faizy,0.0254,score 0.1996 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:13:27,face,DENIED,faizy,0.5901,junaid,0.5232,score 0.5901 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:13:35,face,DENIED,faizy,0.6958,junaid,0.4898,score 0.6958 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:13:44,face,DENIED,faizy,0.6282,junaid,0.4638,score 0.6282 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:13:52,face,ATTEMPT_NO_CAPTURE,,0.0,,0.0,,0.0,0.0,auto — probe was None
+2026-06-25 03:13:58,face,ATTEMPT_NO_CAPTURE,,0.0,,0.0,,0.0,0.0,auto — probe was None
+2026-06-25 03:14:05,face,DENIED,junaid,0.3178,faizy,0.0332,score 0.3178 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:14:13,face,DENIED,junaid,0.5204,faizy,0.2606,score 0.5204 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:14:25,face,ATTEMPT_NO_CAPTURE,,0.0,,0.0,,0.0,0.0,auto — probe was None
+2026-06-25 03:14:31,face,DENIED,junaid,0.3353,faizy,0.0672,score 0.3353 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:14:40,face,ENROLL_REJECTED_DUPLICATE,abd,0.8078,faizy,0.0,duplicate,0.0,0.0,
+2026-06-25 03:14:45,face,GRANTED,faizy,0.7769,junaid,0.5919,ok,0.0,0.0,auto
+2026-06-25 03:14:53,face,DENIED,junaid,0.4463,faizy,0.3766,score 0.4463 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:15:02,face,DENIED,junaid,0.5772,faizy,0.5442,score 0.5772 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:15:10,face,GRANTED,faizy,0.7577,junaid,0.5768,ok,0.0,0.0,auto
+2026-06-25 03:15:24,face,DENIED,junaid,0.4516,faizy,0.4515,score 0.4516 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:15:42,face,DENIED,faizy,0.6776,junaid,0.5587,score 0.6776 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:16:06,face,DENIED,junaid,0.4202,faizy,0.0474,score 0.4202 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:16:15,face,DENIED,faizy,0.6024,junaid,0.4813,score 0.6024 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:16:23,face,ENROLLED,abd,0.0,,0.0,,0.0,0.0,after 1 attempt(s)
+2026-06-25 03:16:43,face,DELETED,abd,0.0,,0.0,,0.0,0.0,
+2026-06-25 03:16:46,voice,DELETED,abd,0.0,,0.0,,0.0,0.0,
+2026-06-25 03:16:54,face,DENIED,junaid,0.3324,faizy,0.0542,score 0.3324 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:17:05,face,ATTEMPT_NO_CAPTURE,,0.0,,0.0,,0.0,0.0,auto — probe was None
+2026-06-25 03:17:20,voice,ENROLLED,abd,0.0,,0.0,,6.59,3822.7,
+2026-06-25 03:17:31,voice,GRANTED,abd,0.9086,ava,0.2666,,3.52,2158.0,auto
+2026-06-25 03:17:39,face,DENIED,junaid,0.5382,faizy,0.525,score 0.5382 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:17:47,face,DENIED,faizy,0.4298,junaid,0.4006,score 0.4298 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:18:00,face,DENIED,faizy,0.664,junaid,0.5803,score 0.6640 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:18:00,voice,DENIED,ava,0.6974,abd,0.5249,below_threshold,2.14,1367.7,auto
+2026-06-25 03:18:08,face,DENIED,faizy,0.5147,junaid,0.4552,score 0.5147 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:18:28,face,ATTEMPT_NO_CAPTURE,,0.0,,0.0,,0.0,0.0,auto — probe was None
+2026-06-25 03:18:40,face,DENIED,faizy,0.6335,junaid,0.5653,score 0.6335 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:18:49,face,ENROLLED,abd,0.0,,0.0,,0.0,0.0,after 1 attempt(s)
+2026-06-25 03:18:57,face,DENIED,abd,0.7178,faizy,0.6377,score 0.7178 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:19:06,face,DENIED,junaid,0.4633,abd,0.3265,score 0.4633 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:19:14,face,GRANTED,abd,0.8597,faizy,0.7323,ok,0.0,0.0,auto
+2026-06-25 03:19:20,voice,DENIED,ava,0.6875,abd,0.504,below_threshold,2.18,1357.6,auto
+2026-06-25 03:19:40,face,ATTEMPT_NO_CAPTURE,,0.0,,0.0,,0.0,0.0,auto — probe was None
+2026-06-25 03:19:45,voice,GRANTED,abd,0.72,ava,0.3075,,2.11,1355.1,auto
+2026-06-25 03:19:49,face,DENIED,abd,0.7622,faizy,0.671,"ambiguous — gap 0.0912 < 0.1 (best=0.7622, 2nd=0.6710)",0.0,0.0,auto
+2026-06-25 03:19:58,face,DENIED,abd,0.6781,faizy,0.4966,score 0.6781 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:20:06,face,GRANTED,abd,0.8624,faizy,0.6805,ok,0.0,0.0,auto
+2026-06-25 03:20:14,face,DENIED,abd,0.7483,junaid,0.7044,score 0.7483 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:20:16,voice,GRANTED,ava,0.916,abd,0.3197,,6.0,3652.5,auto
+2026-06-25 03:20:23,face,GRANTED,abd,0.8452,faizy,0.7151,ok,0.0,0.0,auto
+2026-06-25 03:20:34,voice,GRANTED,ava,0.772,abd,0.4368,,6.0,3538.5,auto
+2026-06-25 03:20:38,face,DENIED,junaid,0.5922,abd,0.4483,score 0.5922 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:20:46,voice,DENIED,abd,0.6457,ava,0.4797,below_threshold,2.08,1362.2,auto
+2026-06-25 03:20:54,face,ATTEMPT_NO_CAPTURE,,0.0,,0.0,,0.0,0.0,auto — probe was None
+2026-06-25 03:20:56,voice,GRANTED,abd,0.7086,ava,0.3952,,2.21,1411.4,auto
+2026-06-25 03:21:28,face,DENIED,abd,0.6977,faizy,0.504,score 0.6977 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:21:37,face,GRANTED,abd,0.9066,faizy,0.7671,ok,0.0,0.0,auto
+2026-06-25 03:21:52,face,DENIED,junaid,0.4202,abd,0.1384,score 0.4202 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:22:37,face,DENIED,abd,0.5767,junaid,0.4749,score 0.5767 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:22:39,server,CLIENT_DISCONNECTED,,0.0,,0.0,,0.0,0.0,"('192.168.100.4', 55350)"
+2026-06-25 03:22:43,voice,GRANTED,ava,0.8864,abd,0.2594,,2.24,1467.1,auto
+2026-06-25 03:22:46,face,DENIED,junaid,0.5465,abd,0.2917,score 0.5465 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:22:54,face,DENIED,junaid,0.5698,abd,0.2991,score 0.5698 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:22:55,server,SHUTDOWN,,0.0,,0.0,,0.0,0.0,
