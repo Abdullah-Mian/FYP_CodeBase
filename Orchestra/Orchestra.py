@@ -1,28 +1,27 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║   Biometric Orchestrator  –  server.py  (Orchestrator + WebSocket + mDNS)   ║
-║                                                                              ║
-║   Process layout (one per physical core):                                    ║
-║     Core 0  →  server.py  (this file)  WebSocket + ZeroConf                 ║
-║     Core 1  →  face_worker   (main.py logic)                                 ║
-║     Core 2  →  voice_worker  (rpi4_ecapa_voice_biometric_v2.py logic)        ║
-║     Core 3  →  free for OS / camera / UART interrupt handling                ║
-║                                                                              ║
-║   IPC model:                                                                 ║
-║     Server ──cmd_q──▶ Worker                                                 ║
-║     Worker ──res_q──▶ Server                                                 ║
-║                                                                              ║
-║   Command protocol (dict serialised through Queue):                          ║
-║     {"op": "verify"}                                                         ║
-║     {"op": "enroll",  "name": "Alice"}                                       ║
-║     {"op": "delete",  "name": "Alice"}                                       ║
-║     {"op": "list"}                                                           ║
-║     {"op": "stop"}                                                           ║
-║                                                                              ║
-║   Workers operate autonomously (continuous identify loop) when idle.         ║
-║   A command from the server sets worker_busy Event, pauses autonomous        ║
-║   loop, executes the command, clears Event, then resumes.                    ║
+║   Biometric Orchestrator  v3.0  –  Orchestra.py                            ║
+║                                                                            ║
+║   Process layout (one per physical core):                                  ║
+║     Core 0  →  Orchestra.py  (this file)  WebSocket + ZeroConf             ║
+║     Core 1  →  face_worker   (main.py logic)                               ║
+║     Core 2  →  voice_worker  (rpi4_ecapa_voice_biometric_v2.py logic)      ║
+║     Core 3  →  free for OS / camera / UART interrupt handling              ║
+║                                                                            ║
+║   Key behaviours:                                                          ║
+║     • Face: autonomous — verifies whenever a face is in FOV                ║
+║     • Voice: autonomous — listens on UART, verifies when audio arrives     ║
+║       Default TFT state: "STANDBY"                                         ║
+║       Audio starts arriving → "LISTENING"                                  ║
+║       Audio stops → "PROCESSING AUDIO: Xs"                                 ║
+║       Result → "GRANTED: name (score)" or "DENIED: name (score)"           ║
+║       After cooldown → back to "STANDBY"                                   ║
+║     • Every attempt logged: method, timestamp, confidence, details → CSV   ║
+║     • Server never self-disconnects; self-recoverable, never hangs         ║
+║     • TFT display of results is robust (try/except, time-bounded)          ║
+║     • Commands from client trigger the same operations as the standalone   ║
+║       terminal menus in main.py / rpi4_ecapa_voice_biometric_v2.py         ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """
 
@@ -30,6 +29,7 @@ import asyncio
 import json
 import os
 import sys
+import csv
 import time
 import signal
 import socket
@@ -40,7 +40,6 @@ import glob
 import multiprocessing as mp
 from multiprocessing import Process, Queue, Event
 from datetime import datetime
-from logging.handlers import QueueHandler, QueueListener
 
 import websockets
 from websockets.server import serve
@@ -58,65 +57,99 @@ log = logging.getLogger("orchestrator")
 CORE_SERVER = {0}
 CORE_FACE   = {1}
 CORE_VOICE  = {2}
-# Core 3 is intentionally left free for the OS, UART DMA, and camera interrupts.
 
-# ── Autonomous face identification cooldown ───────────────────────────────────
-# Behaviour (per user spec):
-#   • UNKNOWN / DENIED face → retry every AUTO_FACE_RETRY_S seconds, for as
-#     long as a face remains in frame. No long cooldown on failures, because
-#     an unrecognised visitor should be re-challenged quickly, not ignored.
-#   • GRANTED face → no further re-identification attempts are made for
-#     THAT SAME physical face while it stays in the FOV. The cooldown lifts
-#     immediately once that face leaves frame (or a different face replaces
-#     it) — there is no fixed wait after a grant, only "don't re-scan an
-#     already-approved person who hasn't left yet".
-#
-# "Same face" is tracked with a lightweight position heuristic (IOU between
-# successive frames' largest face box) since we don't have a true tracker —
-# good enough to tell "still the same person standing there" from
-# "someone new walked in".
-AUTO_FACE_RETRY_S   = 2.0     # retry period while face is UNKNOWN/DENIED
-GRANTED_IOU_THRESH  = 0.3     # IOU above this => treat as "still same face"
+# ── Autonomous face identification ───────────────────────────────────────────
+AUTO_FACE_RETRY_S   = 2.0
+GRANTED_IOU_THRESH  = 0.3
 
+# ── Voice TFT status display duration ────────────────────────────────────────
+VOICE_RESULT_DISPLAY_S = 4.0   # show result before returning to STANDBY
+
+# ── Log file ─────────────────────────────────────────────────────────────────
+LOG_CSV_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "biometric_log.csv")
+LOG_CSV_COLUMNS = [
+    "timestamp", "method", "event", "user", "confidence",
+    "second_best_user", "second_best_score", "reason",
+    "audio_duration_s", "inference_time_ms", "detail",
+]
 
 
 def _pin(cores: set):
-    """Pin the calling process to the given CPU core set."""
     try:
         os.sched_setaffinity(0, cores)
         log.info("Pinned to core(s) %s", cores)
     except AttributeError:
-        log.warning("sched_setaffinity not available on this OS (not Linux?)")
+        log.warning("sched_setaffinity not available on this OS")
     except PermissionError:
         log.warning("No permission to set CPU affinity — running unpinned.")
 
+
 # ─────────────────────────────────────────────────────────────────────────────
-#  SHARED AUDIT LOG
-#  A simple list in a multiprocessing.Manager().list() so all three processes
-#  can append to it without a lock.  Server reads it on "get_logs" command.
+#  SHARED STATE + LOGGING
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _make_shared_state(manager):
     return {
-        "logs":  manager.list(),           # list of {"time", "worker", "event"}
-        "users": manager.dict(),           # {"Alice": "face"|"voice"|"both"}
-        # Latest one-line voice status, written by the voice worker and read
-        # by the face worker so it can render it on the TFT above the camera
-        # feed (the face worker owns the physical display object).
-        "voice_status": manager.dict({"text": "—"}),
+        "logs":         manager.list(),
+        "users":        manager.dict(),
+        "voice_status": manager.dict({"text": "STANDBY"}),
     }
 
 def _set_voice_status(shared_display, text: str):
-    shared_display["text"] = text
+    try:
+        shared_display["text"] = text
+    except Exception:
+        pass
 
 def _get_voice_status(shared_display) -> str:
     try:
-        return shared_display.get("text", "—")
+        return shared_display.get("text", "STANDBY")
     except Exception:
-        return "—"
+        return "STANDBY"
+
+
+def _init_csv_log():
+    if not os.path.exists(LOG_CSV_FILE):
+        try:
+            with open(LOG_CSV_FILE, "w", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=LOG_CSV_COLUMNS)
+                writer.writeheader()
+        except Exception as e:
+            log.error("Failed to create CSV log: %s", e)
+
+
+def _log_event(shared_logs, method: str, event: str,
+               user: str = "", confidence: float = 0.0,
+               second_best_user: str = "", second_best_score: float = 0.0,
+               reason: str = "", audio_duration_s: float = 0.0,
+               inference_time_ms: float = 0.0, detail: str = ""):
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    entry = {
+        "timestamp":         ts,
+        "method":            method,
+        "event":             event,
+        "user":              user,
+        "confidence":        round(confidence, 4) if confidence else 0.0,
+        "second_best_user":  second_best_user,
+        "second_best_score": round(second_best_score, 4) if second_best_score else 0.0,
+        "reason":            reason,
+        "audio_duration_s":  round(audio_duration_s, 2) if audio_duration_s else 0.0,
+        "inference_time_ms": round(inference_time_ms, 1) if inference_time_ms else 0.0,
+        "detail":            detail,
+    }
+    try:
+        shared_logs.append(entry)
+    except Exception:
+        pass
+    try:
+        with open(LOG_CSV_FILE, "a", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=LOG_CSV_COLUMNS)
+            writer.writerow(entry)
+    except Exception as e:
+        log.error("Failed to write CSV log entry: %s", e)
+
 
 def _iou(box_a, box_b) -> float:
-    """Intersection-over-union of two (x, y, w, h) boxes. 0 if no overlap."""
     ax, ay, aw, ah = box_a
     bx, by, bw, bh = box_b
     ix1, iy1 = max(ax, bx), max(ay, by)
@@ -128,58 +161,28 @@ def _iou(box_a, box_b) -> float:
     union = aw * ah + bw * bh - inter
     return inter / union if union > 0 else 0.0
 
-def _log_event(shared_logs, worker: str, event: str):
-    shared_logs.append({
-        "time":   datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "worker": worker,
-        "event":  event,
-    })
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  FACE WORKER  (Core 1)
-#  Imports the functional pieces of main.py without calling main().
-#  Runs an autonomous verification loop; pauses when cmd_q has work.
+#
+#  Uses main.py's exact functions: enroll_face, capture_probe, match_probe,
+#  check_enrollment_duplicate, load_database, save_database, etc.
+#  Commands from client map 1:1 to what main.py's terminal menu does:
+#    "enroll" → same as pressing 'a' (ADD) in main.py
+#    "verify" → same as pressing 'v' (VERIFY) in main.py
+#    "delete" → same as pressing 'd' (DELETE) in main.py
+#    "list"   → same as pressing 'l' (LIST) in main.py
 # ─────────────────────────────────────────────────────────────────────────────
 
 def face_worker_process(cmd_q: Queue, res_q: Queue, busy_evt: Event,
                         shared_logs, shared_users, shared_display):
-    """
-    Entry point for the face recognition subprocess.
-
-    DEFAULT (autonomous) mode
-    ─────────────────────────
-    Runs continuously.  As soon as a single face appears in the camera FOV
-    and the DB has enough enrolled identities, a verification attempt is
-    triggered automatically (no delay/cooldown on first sight).
-      • If GRANTED: that physical face is not re-scanned again while it
-        stays in frame (tracked via simple IOU). The moment it leaves, or
-        a different face appears, scanning resumes immediately.
-      • If DENIED/UNKNOWN: retried every AUTO_FACE_RETRY_S seconds for as
-        long as a face remains in frame.
-      • If MORE THAN ONE face is in frame: no identification is attempted
-        at all; the TFT asks the user to keep only one face in view.
-
-    COMMAND mode (overrides autonomous mode)
-    ────────────────────────────────────────
-    Any dict placed in cmd_q by the WebSocket server immediately preempts the
-    autonomous loop.  The worker executes the command, puts the result in
-    res_q, then resumes autonomous mode.  This is how the remote client gains
-    exclusive control (enroll / verify / delete / list).
-    """
     _pin(CORE_FACE)
-    proc_name = "face_worker"
-    mp.current_process().name = proc_name
+    mp.current_process().name = "face_worker"
     log.info("[FACE] Worker started on core %s", CORE_FACE)
 
-    # ── lazy import so the heavy libs load in this process only ──────────────
     try:
         import cv2
         import numpy as np
-        from picamera2 import Picamera2
-        import mediapipe as _mp_lib
-
-        # Import the functions we need directly from main.py
-        # (They live in the same directory)
         sys.path.insert(0, os.path.dirname(__file__))
         from main import (
             TFTDisplay, PiCamera, BlazeFaceDetector,
@@ -195,7 +198,9 @@ def face_worker_process(cmd_q: Queue, res_q: Queue, busy_evt: Event,
         res_q.put({"worker": "face", "status": "fatal", "error": str(e)})
         return
 
-    # ── hardware init ─────────────────────────────────────────────────────────
+    display = camera = detector = None
+    db = {}
+
     try:
         display  = TFTDisplay()
         camera   = PiCamera()
@@ -214,67 +219,153 @@ def face_worker_process(cmd_q: Queue, res_q: Queue, busy_evt: Event,
     def _voice_status_fn():
         return _get_voice_status(shared_display)
 
-    # ── helpers ───────────────────────────────────────────────────────────────
+    def _safe_tft(status_msg, duration=2.0):
+        """Flash a result on TFT for duration. Never hangs."""
+        try:
+            t_end = time.time() + duration
+            while time.time() < t_end:
+                try:
+                    ok2, fr2 = camera.read_preview()
+                    vtxt = _get_voice_status(shared_display)
+                    if ok2:
+                        display.show_frame(fr2, status=status_msg, fps=fps,
+                                           voice_status=vtxt)
+                except Exception:
+                    pass
+                time.sleep(0.03)
+        except Exception:
+            pass
+
+    def _get_second_best(probe_emb, db_dict):
+        """Compute all scores, return (sorted_list, second_name, second_score)."""
+        try:
+            scores = {}
+            for n, template in db_dict.items():
+                tmpl = l2_normalize(np.asarray(template, dtype=np.float32))
+                scores[n] = float(np.dot(probe_emb, tmpl))
+            ss = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+            s2n = ss[1][0] if len(ss) > 1 else ""
+            s2s = ss[1][1] if len(ss) > 1 else 0.0
+            return s2n, s2s
+        except Exception:
+            return "", 0.0
+
+    # ── command handler ───────────────────────────────────────────────────────
     def _handle_command(cmd: dict) -> dict:
-        """Execute one command dict; return result dict."""
-        nonlocal db   # needed by the reload_db branch
+        nonlocal db
         op   = cmd.get("op")
         name = cmd.get("name", "").strip()
 
+        # ── ENROLL (same as 'a' ADD in main.py) ──────────────────────────
         if op == "enroll":
             if not name:
                 return {"status": "error", "message": "Name required for enroll"}
-            embedding = enroll_face(camera, detector, display,
-                                    voice_status_fn=_voice_status_fn)
-            if embedding is None:
-                return {"status": "error",
-                        "message": "Enrollment capture failed (no face, "
-                                   "face too small, or multiple faces in frame)"}
-            dup_ok, dup_name, dup_score = check_enrollment_duplicate(embedding, db)
-            if not dup_ok:
-                _log_event(shared_logs, "face",
-                          f"Enroll '{name}' REJECTED — duplicate of "
-                          f"'{dup_name}' score={dup_score:.4f}")
-                return {"status": "error",
-                        "message": f"Rejected — this face matches existing "
-                                   f"identity '{dup_name}' at {dup_score:.4f} "
-                                   f"(threshold {ENROLL_DUPLICATE_THRESHOLD}). "
-                                   f"This person already appears to be enrolled."}
-            db[name] = embedding
-            save_database(db)
-            shared_users[name] = shared_users.get(name, "") or "face"
-            _log_event(shared_logs, "face", f"Enrolled '{name}'")
-            return {"status": "success", "user": name}
 
+            max_attempts = cmd.get("max_attempts", 50)
+            attempt = 0
+            while attempt < max_attempts:
+                attempt += 1
+                log.info("[FACE] Enroll attempt %d for '%s'", attempt, name)
+                res_q.put({"worker": "face", "status": "progress",
+                           "step": "face_enroll",
+                           "message": f"Attempt {attempt} — look at camera…"})
+
+                try:
+                    embedding = enroll_face(camera, detector, display,
+                                            voice_status_fn=_voice_status_fn)
+                except Exception as e:
+                    log.warning("[FACE] enroll_face exception: %s", e)
+                    embedding = None
+
+                if embedding is None:
+                    _log_event(shared_logs, "face", "ENROLL_ATTEMPT_FAILED",
+                               user=name, detail=f"attempt={attempt}")
+                    # Check for cancel
+                    try:
+                        if not cmd_q.empty():
+                            peek = cmd_q.get_nowait()
+                            if peek.get("op") == "cancel_enroll":
+                                _log_event(shared_logs, "face", "ENROLL_CANCELLED",
+                                           user=name, detail=f"after {attempt} attempts")
+                                return {"status": "error",
+                                        "message": f"Cancelled after {attempt} attempts"}
+                            else:
+                                cmd_q.put(peek)
+                    except Exception:
+                        pass
+                    time.sleep(0.5)
+                    continue
+
+                # Duplicate check (same as main.py does)
+                dup_ok, dup_name, dup_score = check_enrollment_duplicate(embedding, db)
+                if not dup_ok:
+                    _log_event(shared_logs, "face", "ENROLL_REJECTED_DUPLICATE",
+                               user=name, confidence=dup_score,
+                               second_best_user=dup_name,
+                               reason="duplicate")
+                    return {"status": "error",
+                            "message": f"Rejected — matches '{dup_name}' at "
+                                       f"{dup_score:.4f} (threshold "
+                                       f"{ENROLL_DUPLICATE_THRESHOLD})"}
+
+                # Save (same as main.py)
+                db[name] = embedding
+                save_database(db)
+                shared_users[name] = shared_users.get(name, "") or "face"
+                _log_event(shared_logs, "face", "ENROLLED",
+                           user=name, detail=f"after {attempt} attempt(s)")
+                _safe_tft(f"ENROLLED: {name}", duration=2.0)
+                return {"status": "success", "user": name}
+
+            _log_event(shared_logs, "face", "ENROLL_FAILED",
+                       user=name, detail=f"max {max_attempts} attempts exhausted")
+            return {"status": "error",
+                    "message": f"Failed after {max_attempts} attempts"}
+
+        # ── VERIFY (same as 'v' VERIFY in main.py) ───────────────────────
         elif op == "verify":
-            probe = capture_probe(camera, detector, display,
-                                  voice_status_fn=_voice_status_fn)
-            if probe is None:
-                return {"status": "error",
-                        "message": "Probe capture failed (no face, face too "
-                                   "small, or multiple faces in frame)"}
-            granted, best_name, best_score, reason = match_probe(probe, db)
-            _log_event(shared_logs, "face",
-                       f"{'GRANTED' if granted else 'DENIED'} {best_name} "
-                       f"score={best_score:.4f}")
-            return {
-                "status":  "success",
-                "granted": granted,
-                "user":    best_name,
-                "score":   round(best_score, 4),
-                "reason":  reason,
-            }
+            try:
+                probe = capture_probe(camera, detector, display,
+                                      voice_status_fn=_voice_status_fn)
+            except Exception as e:
+                log.warning("[FACE] capture_probe error: %s", e)
+                probe = None
 
+            if probe is None:
+                _log_event(shared_logs, "face", "VERIFY_FAILED",
+                           reason="capture_failed")
+                return {"status": "error",
+                        "message": "Probe capture failed"}
+
+            granted, best_name, best_score, reason = match_probe(probe, db)
+            s2n, s2s = _get_second_best(probe, db)
+            event_type = "GRANTED" if granted else "DENIED"
+            _log_event(shared_logs, "face", event_type,
+                       user=best_name, confidence=best_score,
+                       second_best_user=s2n, second_best_score=s2s,
+                       reason=reason)
+
+            if granted:
+                _safe_tft(f"GRANTED:{best_name} ({best_score:.2f})", 2.0)
+            else:
+                _safe_tft(f"DENIED (closest:{best_name} {best_score:.2f})", 2.0)
+
+            return {"status": "success", "granted": granted,
+                    "user": best_name, "score": round(best_score, 4),
+                    "reason": reason}
+
+        # ── DELETE (same as 'd' DELETE in main.py) ────────────────────────
         elif op == "delete":
             if not name:
-                return {"status": "error", "message": "Name required for delete"}
+                return {"status": "error", "message": "Name required"}
             if name not in db:
-                return {"status": "error", "message": f"'{name}' not found in face DB"}
+                return {"status": "error", "message": f"'{name}' not in face DB"}
             del db[name]
             save_database(db)
-            _log_event(shared_logs, "face", f"Deleted '{name}'")
+            _log_event(shared_logs, "face", "DELETED", user=name)
             return {"status": "success", "deleted": name}
 
+        # ── LIST (same as 'l' LIST in main.py) ───────────────────────────
         elif op == "list":
             return {"status": "success", "data": list(db.keys())}
 
@@ -282,188 +373,191 @@ def face_worker_process(cmd_q: Queue, res_q: Queue, busy_evt: Event,
             db = load_database()
             return {"status": "success", "count": len(db)}
 
+        elif op == "cancel_enroll":
+            return {"status": "success", "message": "Nothing active to cancel"}
+
         else:
             return {"status": "error", "message": f"Unknown op '{op}'"}
 
-
-
-    # ── main loop ─────────────────────────────────────────────────────────────
-    fps_t              = time.time()
-    fps                = 0.0
-    fc                 = 0
-    last_attempt_time  = 0.0   # timestamp of last autonomous identify attempt
-    granted_box        = None  # box of the last GRANTED face, while still in frame
-    granted_name       = None
+    # ── MAIN LOOP ─────────────────────────────────────────────────────────────
+    fps_t             = time.time()
+    fps               = 0.0
+    fc                = 0
+    last_attempt_time = 0.0
+    granted_box       = None
+    granted_name      = None
 
     try:
         while True:
-            # ── Priority 1: check for incoming command (non-blocking) ─────────
-            if not cmd_q.empty():
-                cmd = cmd_q.get_nowait()
-                if cmd.get("op") == "stop":
-                    log.info("[FACE] Stop command received")
-                    break
+            # ── Priority 1: command from server ──────────────────────────
+            try:
+                if not cmd_q.empty():
+                    cmd = cmd_q.get_nowait()
+                    if cmd.get("op") == "stop":
+                        log.info("[FACE] Stop received"); break
+                    busy_evt.set()
+                    log.info("[FACE] Cmd: %s", cmd)
+                    try:
+                        result = _handle_command(cmd)
+                    except Exception as exc:
+                        log.error("[FACE] Cmd error: %s", traceback.format_exc())
+                        result = {"status": "error", "message": str(exc)}
+                        _log_event(shared_logs, "face", "ERROR", detail=str(exc)[:200])
+                    res_q.put({"worker": "face", **result})
+                    busy_evt.clear()
+                    continue
+            except Exception:
+                time.sleep(0.1); continue
 
-                busy_evt.set()
-                log.info("[FACE] Executing command: %s", cmd)
-                try:
-                    result = _handle_command(cmd)
-                except Exception as exc:
-                    result = {"status": "error", "message": traceback.format_exc()}
-                res_q.put({"worker": "face", **result})
-                busy_evt.clear()
-                continue
-
-            # ── Priority 2: autonomous verify loop ───────────────────────────
-            ok, frame = camera.read_preview()
+            # ── Priority 2: autonomous face verify ───────────────────────
+            try:
+                ok, frame = camera.read_preview()
+            except Exception:
+                time.sleep(0.05); continue
             if not ok:
-                time.sleep(0.005)
-                continue
+                time.sleep(0.005); continue
 
             fc += 1
             if fc % 30 == 0:
-                fps   = 30.0 / (time.time() - fps_t)
+                dt = time.time() - fps_t
+                if dt > 0.001: fps = 30.0 / dt
                 fps_t = time.time()
 
-            detects     = detector.detect_with_landmarks(frame)
-            faces       = [d["box"] for d in detects]
-            voice_txt   = _get_voice_status(shared_display)
+            try:
+                detects   = detector.detect_with_landmarks(frame)
+                faces     = [d["box"] for d in detects]
+                voice_txt = _get_voice_status(shared_display)
+            except Exception:
+                time.sleep(0.01); continue
 
+            # Multiple faces
             if len(detects) > MAX_FACES_IN_FRAME:
-                # Ambiguous scene — refuse to identify, ask user to clear FOV.
-                granted_box, granted_name = None, None
-                display.show_frame(frame, faces=faces,
-                                   status="MULTIPLE FACES - SHOW ONE ONLY",
-                                   fps=fps, voice_status=voice_txt)
-                time.sleep(0.01)
-                continue
+                granted_box = granted_name = None
+                try: display.show_frame(frame, faces=faces,
+                        status="MULTIPLE FACES", fps=fps, voice_status=voice_txt)
+                except Exception: pass
+                time.sleep(0.01); continue
 
+            # No face
             if not detects:
-                # No one in frame — clear the granted-face memory so the
-                # NEXT person (even if it's the same person walking back in)
-                # gets identified fresh, with no leftover cooldown.
-                granted_box, granted_name = None, None
-                display.show_frame(frame, faces=faces, status="WATCHING",
-                                   fps=fps, voice_status=voice_txt)
-                time.sleep(0.01)
-                continue
+                granted_box = granted_name = None
+                try: display.show_frame(frame, faces=faces, status="WATCHING",
+                        fps=fps, voice_status=voice_txt)
+                except Exception: pass
+                time.sleep(0.01); continue
 
             current_box = detects[0]["box"]
-
-            # Is this still the same face we already granted?
-            still_granted = (
-                granted_box is not None
-                and _iou(current_box, granted_box) >= GRANTED_IOU_THRESH
-            )
+            still_granted = (granted_box is not None
+                             and _iou(current_box, granted_box) >= GRANTED_IOU_THRESH)
 
             if still_granted:
-                display.show_frame(frame, faces=faces,
-                                   status=f"GRANTED:{granted_name}",
-                                   fps=fps, voice_status=voice_txt)
-                time.sleep(0.01)
-                continue
+                try: display.show_frame(frame, faces=faces,
+                        status=f"GRANTED:{granted_name}", fps=fps,
+                        voice_status=voice_txt)
+                except Exception: pass
+                time.sleep(0.01); continue
 
-            # A new/different face is here (or the old one moved enough that
-            # we no longer trust it's the same person) — clear stale grant.
             if granted_box is not None and not still_granted:
-                granted_box, granted_name = None, None
+                granted_box = granted_name = None
 
             now = time.time()
-            ready_to_try = (
-                len(db) >= MIN_GALLERY_SIZE
-                and not busy_evt.is_set()
-                and (now - last_attempt_time) >= AUTO_FACE_RETRY_S
-            )
+            ready = (len(db) >= MIN_GALLERY_SIZE
+                     and not busy_evt.is_set()
+                     and (now - last_attempt_time) >= AUTO_FACE_RETRY_S)
 
-            if not ready_to_try:
-                display.show_frame(frame, faces=faces, status="WATCHING",
-                                   fps=fps, voice_status=voice_txt)
-                time.sleep(0.01)
-                continue
+            if not ready:
+                try: display.show_frame(frame, faces=faces, status="WATCHING",
+                        fps=fps, voice_status=voice_txt)
+                except Exception: pass
+                time.sleep(0.01); continue
 
-            display.show_frame(frame, faces=faces, status="IDENTIFYING…",
-                               fps=fps, voice_status=voice_txt)
+            # ── Attempt autonomous verify ────────────────────────────────
+            try: display.show_frame(frame, faces=faces, status="IDENTIFYING…",
+                    fps=fps, voice_status=voice_txt)
+            except Exception: pass
 
-            probe = capture_probe(camera, detector, display,
-                                  voice_status_fn=_voice_status_fn,
-                                  abort_fn=lambda: not cmd_q.empty())
+            try:
+                probe = capture_probe(camera, detector, display,
+                                      voice_status_fn=_voice_status_fn,
+                                      abort_fn=lambda: not cmd_q.empty())
+            except Exception as e:
+                log.warning("[FACE][AUTO] capture error: %s", e)
+                probe = None
 
-            # Check cmd_q again — a command may have arrived while we were
-            # in the multi-second capture_probe() call.  If so, skip the
-            # inference result and let the top-of-loop command path handle
-            # it on the next iteration.
             if not cmd_q.empty():
-                last_attempt_time = time.time()
-                continue
+                last_attempt_time = time.time(); continue
 
             if probe is not None:
-                granted, name, score, reason = match_probe(probe, db)
-                tag        = "GRANTED" if granted else "DENIED"
-                status_msg = f"GRANTED:{name}" if granted else "UNKNOWN"
-                log.info("[FACE][AUTO] %s  %s  %.4f", tag, name, score)
-                _log_event(shared_logs, "face",
-                           f"[AUTO] {tag} {name} score={score:.4f}")
+                try:
+                    granted, name, score, reason = match_probe(probe, db)
+                except Exception:
+                    last_attempt_time = time.time(); continue
+
+                s2n, s2s = _get_second_best(probe, db)
+                tag = "GRANTED" if granted else "DENIED"
 
                 if granted:
-                    # Remember this face so we don't immediately re-scan it.
+                    status_msg = f"GRANTED:{name} ({score:.2f})"
                     granted_box, granted_name = current_box, name
+                else:
+                    status_msg = f"UNKNOWN (closest:{name} {score:.2f})"
 
-                # Flash result on TFT for 2 s
-                t_end = time.time() + 2.0
-                while time.time() < t_end:
-                    ok2, fr2 = camera.read_preview()
-                    voice_txt2 = _get_voice_status(shared_display)
-                    if ok2:
-                        display.show_frame(fr2, status=status_msg, fps=fps,
-                                           voice_status=voice_txt2)
+                log.info("[FACE][AUTO] %s %s %.4f", tag, name, score)
+                _log_event(shared_logs, "face", tag,
+                           user=name, confidence=score,
+                           second_best_user=s2n, second_best_score=s2s,
+                           reason=reason, detail="auto")
 
-            # Always stamp the attempt time, whether the probe succeeded or
-            # not — this is what enforces the AUTO_FACE_RETRY_S spacing
-            # between unknown-face retries; it does NOT block a future
-            # grant since `still_granted` short-circuits before this point
-            # once a grant has happened.
+                _safe_tft(status_msg, 2.0)
+            else:
+                _log_event(shared_logs, "face", "ATTEMPT_NO_CAPTURE",
+                           detail="auto — probe was None")
+
             last_attempt_time = time.time()
 
     except KeyboardInterrupt:
         pass
+    except Exception as e:
+        log.error("[FACE] Main loop crash: %s\n%s", e, traceback.format_exc())
     finally:
-        camera.stop()
-        detector.close()
-        save_database(db)
-        display.clear()
+        try: camera.stop()
+        except Exception: pass
+        try: detector.close()
+        except Exception: pass
+        try: save_database(db)
+        except Exception: pass
+        try: display.clear()
+        except Exception: pass
         log.info("[FACE] Worker shutdown complete")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  VOICE WORKER  (Core 2)
-#  Imports the functional pieces of rpi4_ecapa_voice_biometric_v2.py.
-#  Listens to UART continuously; pauses when commanded.
+#
+#  Uses rpi4_ecapa_voice_biometric_v2.py's exact functions and classes:
+#    UARTReceiver, ONNXAuthenticator, enrolled_speakers, raw_to_features,
+#    save_debug_wav, etc.
+#  Commands from client map 1:1 to what the standalone terminal menu does:
+#    "enroll" → same as choosing '1' (Enroll New Speaker)
+#    "verify" → same as choosing '2' (Verify / Identify Speaker)
+#    "delete" → same as choosing '4' (Delete Speaker)
+#    "list"   → same as choosing '3' (List Enrolled Speakers)
+#
+#  Autonomous mode:
+#    Default state: STANDBY (displayed on TFT via shared_display)
+#    UARTReceiver.receive_session() blocks waiting for ESP32 audio.
+#    As soon as any audio frame arrives → TFT shows "LISTENING"
+#    When session completes → "PROCESSING AUDIO: X.Xs"
+#    After inference → result displayed, then back to STANDBY
+#
+#  To show "LISTENING" the instant audio starts (not after the session ends),
+#  we use a modified receive loop that updates shared_display in real-time.
 # ─────────────────────────────────────────────────────────────────────────────
 
 def voice_worker_process(cmd_q: Queue, res_q: Queue, busy_evt: Event,
                          shared_logs, shared_users, shared_display):
-    """
-    Entry point for the voice recognition subprocess.
-
-    DEFAULT (autonomous) mode
-    ─────────────────────────
-    Blocks on UARTReceiver.receive_session().  Each time the ESP32 sends a
-    complete audio session, the worker runs ECAPA-TDNN inference and logs
-    the identification result.  It re-checks cmd_q after every session so
-    commands are never delayed by more than VERIFY_MAX_S + RECEIVE_TIMEOUT_S
-    seconds (~11 s worst case).
-
-    Every state transition (listening / processing / granted / denied /
-    error) is written into shared_display so the face worker can render it
-    as a text line on the TFT, above the camera feed.
-
-    COMMAND mode
-    ────────────
-    Same override mechanism as the face worker.
-    """
     _pin(CORE_VOICE)
-    proc_name = "voice_worker"
-    mp.current_process().name = proc_name
+    mp.current_process().name = "voice_worker"
     log.info("[VOICE] Worker started on core %s", CORE_VOICE)
 
     try:
@@ -485,7 +579,6 @@ def voice_worker_process(cmd_q: Queue, res_q: Queue, busy_evt: Event,
         res_q.put({"worker": "voice", "status": "fatal", "error": str(e)})
         return
 
-    # ── hardware init ─────────────────────────────────────────────────────────
     try:
         if not os.path.exists(ONNX_MODEL):
             raise FileNotFoundError(f"ONNX model not found: {ONNX_MODEL}")
@@ -500,96 +593,219 @@ def voice_worker_process(cmd_q: Queue, res_q: Queue, busy_evt: Event,
 
     res_q.put({"worker": "voice", "status": "ready"})
 
-    def _set_voice(text: str):
+    def _vs(text: str):
+        """Set voice status on TFT (shared across processes)."""
         _set_voice_status(shared_display, text)
         log.debug("[VOICE][TFT] %s", text)
 
-    _set_voice("Idle")
+    _vs("STANDBY")
 
-    # ── helpers ───────────────────────────────────────────────────────────────
+    # ── Custom receive_session that updates TFT in real time ─────────────────
+    def _receive_with_status(min_s, max_s, label="audio"):
+        """
+        Wraps the low-level UART frame reading to give real-time TFT updates:
+          1. Pre-loop: set "STANDBY" (already set)
+          2. First frame arrives: switch to "LISTENING"
+          3. During receive: update with elapsed time
+          4. Session ends: switch to "PROCESSING AUDIO: X.Xs"
+
+        Returns raw PCM bytes or None (same contract as UARTReceiver.receive_session).
+        """
+        # Flush stale bytes (same as the original)
+        uart._ser.reset_input_buffer()
+
+        max_bytes = int(max_s * SAMPLE_RATE * SAMPLE_WIDTH)
+        min_bytes = int(min_s * SAMPLE_RATE * SAMPLE_WIDTH)
+        accum     = bytearray()
+        started   = False
+        start_time = None
+
+        log.info("[VOICE] Waiting for %s… min=%.0fs max=%.0fs", label, min_s, max_s)
+
+        while True:
+            # Check for command pre-emption
+            if not cmd_q.empty():
+                if accum:
+                    break  # Return what we have
+                return None  # No audio yet, bail
+
+            frame = uart._read_frame()
+
+            if frame is None:
+                if started and accum:
+                    break  # Timeout after data → session end
+                continue   # Timeout before first frame → keep waiting
+
+            if frame == b'':
+                if accum:
+                    break  # Clean EOS from ESP32
+                continue   # EOS before any data
+
+            if not started:
+                started = True
+                start_time = time.time()
+                _vs("LISTENING")
+                log.info("[VOICE] Audio session started")
+
+            accum.extend(frame)
+            dur = len(accum) / (SAMPLE_RATE * SAMPLE_WIDTH)
+            _vs(f"LISTENING: {dur:.1f}s")
+
+            if len(accum) >= max_bytes:
+                break
+
+        if not accum:
+            return None
+
+        actual_s = len(accum) / (SAMPLE_RATE * SAMPLE_WIDTH)
+        if len(accum) < min_bytes:
+            _vs(f"TOO SHORT: {actual_s:.1f}s < {min_s:.0f}s")
+            log.warning("[VOICE] Audio too short: %.2fs", actual_s)
+            time.sleep(1.5)
+            _vs("STANDBY")
+            return None
+
+        accum = accum[:max_bytes]
+        final_s = len(accum) / (SAMPLE_RATE * SAMPLE_WIDTH)
+        _vs(f"PROCESSING AUDIO: {final_s:.1f}s")
+        log.info("[VOICE] Session complete: %.2fs — processing…", final_s)
+        return bytes(accum)
+
+    # ── Embedding + matching helpers ─────────────────────────────────────────
     def _embed_audio(raw: bytes):
-        features, _ = raw_to_features(raw)
-        return auth.embed(features)
+        features, audio = raw_to_features(raw)
+        return auth.embed(features), audio
 
     def _best_match(live_emb):
         speakers = enrolled_speakers()
         if not speakers:
-            return None, -1.0
-        best_name, best_score = None, -1.0
+            return None, -1.0, None, -1.0
+        scores = []
         for p in speakers:
             stored = np.load(p)
             s = auth.cosine(stored, live_emb)
             n = os.path.basename(p)[:-4]
-            if s > best_score:
-                best_score, best_name = s, n
-        return best_name, best_score
+            scores.append((n, s))
+        scores.sort(key=lambda x: x[1], reverse=True)
+        best_name, best_score = scores[0]
+        s2_name = scores[1][0] if len(scores) > 1 else ""
+        s2_score = scores[1][1] if len(scores) > 1 else -1.0
+        return best_name, best_score, s2_name, s2_score
 
+    # ── command handler ───────────────────────────────────────────────────────
     def _handle_command(cmd: dict) -> dict:
         op   = cmd.get("op")
         name = (cmd.get("name") or "").lower().strip()
 
+        # ── ENROLL (same as choosing '1' in standalone menu) ─────────────
         if op == "enroll":
             if not name:
                 return {"status": "error", "message": "Name required"}
             emb_path = os.path.join(VOICEPRINT_DB, f"{name}.npy")
             if os.path.exists(emb_path):
-                _set_voice(f"Enroll '{name}' FAILED — already exists")
+                _vs(f"'{name}' already enrolled")
+                _log_event(shared_logs, "voice", "ENROLL_REJECTED",
+                           user=name, reason="already_exists")
                 return {"status": "error",
                         "message": f"'{name}' already enrolled. Delete first."}
-            _set_voice(f"Enrolling '{name}' — speak now…")
-            raw = uart.receive_session(ENROLL_MIN_S, ENROLL_MAX_S,
+
+            _vs(f"ENROLLING '{name}' — speak now…")
+            log.info("[VOICE] Enrolling '%s' — waiting for audio", name)
+
+            raw = _receive_with_status(ENROLL_MIN_S, ENROLL_MAX_S,
                                        label=f"enrollment '{name}'")
             if raw is None:
-                _set_voice(f"Enroll '{name}' FAILED — no audio")
+                _vs(f"Enroll '{name}' FAILED — no audio")
+                _log_event(shared_logs, "voice", "ENROLL_FAILED",
+                           user=name, reason="no_audio")
+                time.sleep(1.5); _vs("STANDBY")
                 return {"status": "error", "message": "No audio received"}
+
+            audio_dur = len(raw) / (SAMPLE_RATE * SAMPLE_WIDTH)
+
             try:
-                emb = _embed_audio(raw)
+                t0 = time.perf_counter()
+                emb, audio = _embed_audio(raw)
+                inf_ms = (time.perf_counter() - t0) * 1000
             except ValueError as e:
-                _set_voice(f"Enroll '{name}' FAILED — {e}")
+                _vs(f"Enroll FAILED — {e}")
+                _log_event(shared_logs, "voice", "ENROLL_FAILED",
+                           user=name, reason="quality", audio_duration_s=audio_dur,
+                           detail=str(e))
+                time.sleep(1.5); _vs("STANDBY")
                 return {"status": "error", "message": f"Quality check: {e}"}
-            # Duplicate check
-            best_n, best_s = _best_match(emb)
+
+            # Duplicate check (same as standalone enroll_speaker)
+            best_n, best_s, _, _ = _best_match(emb)
             if best_s >= DUPLICATE_THRESHOLD:
-                _set_voice(f"Enroll '{name}' REJECTED — dup of '{best_n}'")
+                _vs(f"DUPLICATE of '{best_n}' ({best_s:.2f})")
+                _log_event(shared_logs, "voice", "ENROLL_REJECTED_DUPLICATE",
+                           user=name, confidence=best_s,
+                           second_best_user=best_n, reason="duplicate",
+                           audio_duration_s=audio_dur, inference_time_ms=inf_ms)
+                time.sleep(2.0); _vs("STANDBY")
                 return {"status": "error",
-                        "message": f"Duplicate rejected — matches '{best_n}' "
-                                   f"at {best_s:.4f}"}
+                        "message": f"Duplicate — matches '{best_n}' at {best_s:.4f}"}
+
             np.save(emb_path, emb)
             shared_users[name] = shared_users.get(name, "") or "voice"
-            _log_event(shared_logs, "voice", f"Enrolled '{name}'")
-            _set_voice(f"Enrolled '{name}'")
+            _log_event(shared_logs, "voice", "ENROLLED", user=name,
+                       audio_duration_s=audio_dur, inference_time_ms=inf_ms)
+            _vs(f"ENROLLED: {name}")
+            time.sleep(2.0); _vs("STANDBY")
             return {"status": "success", "user": name}
 
+        # ── VERIFY (same as choosing '2' in standalone menu) ─────────────
         elif op == "verify":
             speakers = enrolled_speakers()
             if not speakers:
-                _set_voice("Verify FAILED — no speakers enrolled")
+                _vs("No speakers enrolled")
+                _log_event(shared_logs, "voice", "VERIFY_FAILED",
+                           reason="no_speakers")
+                time.sleep(1.5); _vs("STANDBY")
                 return {"status": "error", "message": "No speakers enrolled"}
-            _set_voice("Listening for verification…")
-            raw = uart.receive_session(VERIFY_MIN_S, VERIFY_MAX_S,
+
+            _vs("VERIFY — speak now…")
+            raw = _receive_with_status(VERIFY_MIN_S, VERIFY_MAX_S,
                                        label="verification")
             if raw is None:
-                _set_voice("Verify FAILED — no audio")
+                _vs("Verify FAILED — no audio")
+                _log_event(shared_logs, "voice", "VERIFY_FAILED",
+                           reason="no_audio")
+                time.sleep(1.5); _vs("STANDBY")
                 return {"status": "error", "message": "No audio received"}
-            try:
-                emb = _embed_audio(raw)
-            except ValueError as e:
-                _set_voice(f"Verify FAILED — {e}")
-                return {"status": "error", "message": f"Quality check: {e}"}
-            best_name, best_score = _best_match(emb)
-            granted = best_score >= VERIFY_THRESHOLD
-            _log_event(shared_logs, "voice",
-                       f"{'GRANTED' if granted else 'DENIED'} {best_name} "
-                       f"score={best_score:.4f}")
-            _set_voice(f"{'GRANTED' if granted else 'DENIED'}: "
-                      f"{best_name or 'unknown'} ({best_score:.2f})")
-            return {
-                "status":  "success",
-                "granted": granted,
-                "user":    best_name,
-                "score":   round(best_score, 4),
-            }
 
+            audio_dur = len(raw) / (SAMPLE_RATE * SAMPLE_WIDTH)
+
+            try:
+                t0 = time.perf_counter()
+                emb, audio = _embed_audio(raw)
+                inf_ms = (time.perf_counter() - t0) * 1000
+            except ValueError as e:
+                _vs(f"Verify FAILED — {e}")
+                _log_event(shared_logs, "voice", "VERIFY_FAILED",
+                           reason="quality", audio_duration_s=audio_dur,
+                           detail=str(e))
+                time.sleep(1.5); _vs("STANDBY")
+                return {"status": "error", "message": f"Quality check: {e}"}
+
+            best_name, best_score, s2n, s2s = _best_match(emb)
+            granted = best_score >= VERIFY_THRESHOLD
+            tag = "GRANTED" if granted else "DENIED"
+
+            _log_event(shared_logs, "voice", tag,
+                       user=best_name or "unknown", confidence=best_score,
+                       second_best_user=s2n, second_best_score=s2s,
+                       reason="" if granted else "below_threshold",
+                       audio_duration_s=audio_dur, inference_time_ms=inf_ms)
+
+            _vs(f"{tag}: {best_name or 'unknown'} ({best_score:.2f})")
+            time.sleep(VOICE_RESULT_DISPLAY_S); _vs("STANDBY")
+
+            return {"status": "success", "granted": granted,
+                    "user": best_name, "score": round(best_score, 4)}
+
+        # ── DELETE (same as choosing '4' in standalone menu) ──────────────
         elif op == "delete":
             if not name:
                 return {"status": "error", "message": "Name required"}
@@ -597,10 +813,12 @@ def voice_worker_process(cmd_q: Queue, res_q: Queue, busy_evt: Event,
             if not os.path.exists(path):
                 return {"status": "error", "message": f"'{name}' not found"}
             os.remove(path)
-            _log_event(shared_logs, "voice", f"Deleted '{name}'")
-            _set_voice(f"Deleted '{name}'")
+            _log_event(shared_logs, "voice", "DELETED", user=name)
+            _vs(f"Deleted '{name}'")
+            time.sleep(1.0); _vs("STANDBY")
             return {"status": "success", "deleted": name}
 
+        # ── LIST (same as choosing '3' in standalone menu) ────────────────
         elif op == "list":
             names = [os.path.basename(p)[:-4] for p in enrolled_speakers()]
             return {"status": "success", "data": names}
@@ -608,104 +826,107 @@ def voice_worker_process(cmd_q: Queue, res_q: Queue, busy_evt: Event,
         else:
             return {"status": "error", "message": f"Unknown op '{op}'"}
 
-    # ── main loop ─────────────────────────────────────────────────────────────
+    # ── MAIN LOOP — autonomous UART listening + command pre-emption ───────────
     try:
         while True:
-            # ── Check for command first (non-blocking) ────────────────────────
-            if not cmd_q.empty():
-                cmd = cmd_q.get_nowait()
-                if cmd.get("op") == "stop":
-                    log.info("[VOICE] Stop command received")
-                    break
+            # ── Check for command first (non-blocking) ───────────────────
+            try:
+                if not cmd_q.empty():
+                    cmd = cmd_q.get_nowait()
+                    if cmd.get("op") == "stop":
+                        log.info("[VOICE] Stop received"); break
+                    busy_evt.set()
+                    log.info("[VOICE] Cmd: %s", cmd)
+                    try:
+                        result = _handle_command(cmd)
+                    except Exception as exc:
+                        log.error("[VOICE] Cmd error: %s", traceback.format_exc())
+                        result = {"status": "error", "message": str(exc)}
+                        _log_event(shared_logs, "voice", "ERROR",
+                                   detail=str(exc)[:200])
+                    res_q.put({"worker": "voice", **result})
+                    busy_evt.clear()
+                    continue
+            except Exception as e:
+                log.warning("[VOICE] Queue check error (recovering): %s", e)
+                time.sleep(0.5); continue
 
-                busy_evt.set()
-                log.info("[VOICE] Executing command: %s", cmd)
-                try:
-                    result = _handle_command(cmd)
-                except Exception as exc:
-                    result = {"status": "error", "message": traceback.format_exc()}
-                res_q.put({"worker": "voice", **result})
-                busy_evt.clear()
-                continue
+            # ── Autonomous: listen for audio on UART ─────────────────────
+            _vs("STANDBY")
 
-            # ── Autonomous: attempt to receive an audio session ───────────────
-            # UARTReceiver.receive_session() blocks for up to RECEIVE_TIMEOUT_S
-            # waiting for a frame.  We use the short verify window so the loop
-            # re-checks cmd_q every ~VERIFY_MAX_S seconds.
-            log.debug("[VOICE][AUTO] Listening on UART…")
-            _set_voice("Listening…")
-            raw = uart.receive_session(
-                min_seconds=VERIFY_MIN_S,
-                max_seconds=VERIFY_MAX_S,
-                label="auto-identify")
+            raw = _receive_with_status(VERIFY_MIN_S, VERIFY_MAX_S,
+                                       label="auto-identify")
 
-            # If a command arrived while we were blocking, skip inference
+            # Command may have arrived during blocking receive
             if not cmd_q.empty():
                 continue
 
             if raw is None:
-                _set_voice("Idle")
-                continue   # timeout / short session — loop again
+                _vs("STANDBY")
+                continue
+
+            # Got audio — process it
+            audio_dur = len(raw) / (SAMPLE_RATE * SAMPLE_WIDTH)
 
             speakers = enrolled_speakers()
             if not speakers:
-                log.debug("[VOICE][AUTO] No speakers enrolled — skipping")
-                _set_voice("No speakers enrolled")
+                _vs("No speakers enrolled")
+                log.debug("[VOICE][AUTO] No speakers enrolled")
+                _log_event(shared_logs, "voice", "AUTO_VERIFY_SKIPPED",
+                           reason="no_speakers", audio_duration_s=audio_dur)
+                time.sleep(1.5); _vs("STANDBY")
                 continue
 
-            _set_voice("Processing…")
             try:
-                emb = _embed_audio(raw)
+                t0 = time.perf_counter()
+                emb, audio = _embed_audio(raw)
+                inf_ms = (time.perf_counter() - t0) * 1000
             except ValueError as e:
                 log.warning("[VOICE][AUTO] Quality fail: %s", e)
-                _set_voice(f"Audio quality issue — {e}")
+                _vs(f"Audio quality issue")
+                _log_event(shared_logs, "voice", "AUTO_VERIFY_FAILED",
+                           reason="quality", audio_duration_s=audio_dur,
+                           detail=str(e))
+                time.sleep(1.5); _vs("STANDBY")
                 continue
 
-            best_name, best_score = _best_match(emb)
+            best_name, best_score, s2n, s2s = _best_match(emb)
             granted = best_score >= VERIFY_THRESHOLD
             tag = "GRANTED" if granted else "DENIED"
-            log.info("[VOICE][AUTO] %s  %s  %.4f", tag, best_name, best_score)
-            _log_event(shared_logs, "voice",
-                       f"[AUTO] {tag} {best_name} score={best_score:.4f}")
-            _set_voice(f"{tag}: {best_name or 'unknown'} ({best_score:.2f})")
+
+            log.info("[VOICE][AUTO] %s  %s  %.4f  (audio=%.1fs, inf=%.0fms)",
+                     tag, best_name, best_score, audio_dur, inf_ms)
+            _log_event(shared_logs, "voice", tag,
+                       user=best_name or "unknown", confidence=best_score,
+                       second_best_user=s2n, second_best_score=s2s,
+                       reason="" if granted else "below_threshold",
+                       audio_duration_s=audio_dur, inference_time_ms=inf_ms,
+                       detail="auto")
+
+            _vs(f"{tag}: {best_name or 'unknown'} ({best_score:.2f})")
+            time.sleep(VOICE_RESULT_DISPLAY_S)
+            _vs("STANDBY")
 
     except KeyboardInterrupt:
         pass
+    except Exception as e:
+        log.error("[VOICE] Main loop crash: %s\n%s", e, traceback.format_exc())
     finally:
-        uart.close()
+        try: uart.close()
+        except Exception: pass
         log.info("[VOICE] Worker shutdown complete")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  WEBSOCKET SERVER  (Core 0 — asyncio event loop)
+#  WEBSOCKET SERVER  (Core 0)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def get_local_ip() -> str:
-    """
-    Best-effort LAN IP detection that does NOT require internet access.
-
-    The original approach opened a UDP "connection" to 8.8.8.8 — that only
-    works to *choose* the right local interface; it does not actually send
-    a packet, so it normally succeeds even with no internet. But if Wi-Fi
-    itself isn't associated yet (no route to ANY external address, not even
-    a local gateway), it raises and falls back to 127.0.0.1 — which is the
-    actual bug you hit: the server happily binds 0.0.0.0 and mDNS advertises
-    127.0.0.1, so any client (even on the same LAN, definitely on a
-    different LAN) can never reach it.
-
-    Fix: instead of trusting one UDP trick, enumerate actual interface
-    addresses and reject loopback/APIPA ranges. Returns None if no usable
-    LAN IP exists yet (caller is expected to retry later — see
-    wait_for_lan_ip below), instead of silently returning 127.0.0.1.
-    """
     candidates = []
-
-    # Primary method: UDP "connect" trick (works whenever an interface has
-    # ANY route out, even to a private gateway — doesn't need internet).
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
-            s.connect(("10.255.255.255", 1))  # never actually sent (UDP)
+            s.connect(("10.255.255.255", 1))
             ip = s.getsockname()[0]
             if ip and not ip.startswith("127."):
                 candidates.append(ip)
@@ -713,17 +934,13 @@ def get_local_ip() -> str:
             s.close()
     except Exception:
         pass
-
-    # Fallback: resolve hostname to all addresses, filter obviously-bad ones.
     if not candidates:
         try:
-            hostname = socket.gethostname()
-            for ip in socket.gethostbyname_ex(hostname)[2]:
+            for ip in socket.gethostbyname_ex(socket.gethostname())[2]:
                 if not ip.startswith("127.") and not ip.startswith("169.254."):
                     candidates.append(ip)
         except Exception:
             pass
-
     for ip in candidates:
         if not ip.startswith("127.") and not ip.startswith("169.254."):
             return ip
@@ -731,38 +948,22 @@ def get_local_ip() -> str:
 
 
 async def wait_for_lan_ip(poll_interval_s: float = 60.0) -> str:
-    """
-    Block (asynchronously) until the Pi has a real LAN IP — i.e. Wi-Fi/
-    Ethernet is associated — checking every poll_interval_s seconds.
-    Internet access is explicitly NOT required: mDNS + the WebSocket
-    server only need client and server to be on the same LAN segment.
-    Returns the IP once found.
-    """
     attempt = 0
     while True:
         ip = get_local_ip()
         if ip is not None:
             if attempt > 0:
-                log.info("[NET] LAN IP acquired: %s (after %d check(s))",
-                         ip, attempt + 1)
+                log.info("[NET] LAN IP acquired: %s", ip)
             return ip
         attempt += 1
-        log.warning("[NET] No LAN IP yet (Wi-Fi/Ethernet not connected?) — "
-                   "retry #%d in %.0fs", attempt, poll_interval_s)
+        log.warning("[NET] No LAN IP — retry #%d in %.0fs", attempt, poll_interval_s)
         await asyncio.sleep(poll_interval_s)
 
 
 class OrchestratorServer:
-    """
-    Owns the WebSocket server and the two worker subprocess handles.
-    Dispatches client commands to the appropriate worker queue and relays
-    the response back to the client.
-    """
+    RESPONSE_TIMEOUT = 120.0
 
-    RESPONSE_TIMEOUT = 60.0   # seconds to wait for a worker result
-
-    def __init__(self,
-                 face_cmd_q, face_res_q, face_busy,
+    def __init__(self, face_cmd_q, face_res_q, face_busy,
                  voice_cmd_q, voice_res_q, voice_busy,
                  shared_logs, shared_users):
         self.face_cmd_q  = face_cmd_q
@@ -773,21 +974,14 @@ class OrchestratorServer:
         self.voice_busy  = voice_busy
         self.shared_logs = shared_logs
         self.shared_users = shared_users
-
-        # Asyncio lock per worker — prevents two clients from issuing
-        # overlapping commands to the same worker simultaneously.
-        self._face_lock  = None   # created in async context
+        self._face_lock  = None
         self._voice_lock = None
 
     async def _init_locks(self):
         self._face_lock  = asyncio.Lock()
         self._voice_lock = asyncio.Lock()
 
-    async def _dispatch(self, worker: str, cmd: dict) -> dict:
-        """
-        Send cmd to worker queue, wait (async-friendly) for response.
-        Uses a thread-executor poll so the asyncio event loop stays live.
-        """
+    async def _dispatch(self, worker: str, cmd: dict, websocket=None) -> dict:
         if worker == "face":
             q_cmd, q_res, lock = self.face_cmd_q, self.face_res_q, self._face_lock
         else:
@@ -797,19 +991,23 @@ class OrchestratorServer:
             q_cmd.put(cmd)
             deadline = time.monotonic() + self.RESPONSE_TIMEOUT
             loop = asyncio.get_event_loop()
-
             while True:
                 if time.monotonic() > deadline:
                     return {"status": "error", "message": "Worker timed out"}
-                # Poll result queue in thread pool to avoid blocking event loop
                 result = await loop.run_in_executor(None, _try_get, q_res)
                 if result is not None:
+                    if result.get("status") == "progress" and websocket:
+                        try: await websocket.send(json.dumps(result))
+                        except Exception: pass
+                        continue
                     return result
                 await asyncio.sleep(0.05)
 
     async def handle_client(self, websocket):
         addr = websocket.remote_address
         log.info("[WS] Client connected: %s", addr)
+        _log_event(self.shared_logs, "server", "CLIENT_CONNECTED",
+                   detail=str(addr))
         try:
             async for raw_msg in websocket:
                 try:
@@ -821,180 +1019,183 @@ class OrchestratorServer:
 
                 command = data.get("command", "")
                 name    = data.get("name", "").strip()
-                log.info("[WS] Command '%s' from %s", command, addr)
+                log.info("[WS] '%s' from %s", command, addr)
 
-                response = await self._route(command, name, data)
-                await websocket.send(json.dumps(response))
+                try:
+                    response = await self._route(command, name, data, websocket)
+                except Exception as e:
+                    log.error("[WS] Route error: %s", traceback.format_exc())
+                    response = {"status": "error", "message": str(e)}
+
+                try:
+                    await websocket.send(json.dumps(response))
+                except Exception:
+                    break
 
         except websockets.exceptions.ConnectionClosedOK:
             pass
+        except websockets.exceptions.ConnectionClosedError as e:
+            log.warning("[WS] Connection closed: %s", e)
         except Exception as e:
-            log.error("[WS] Client %s error: %s", addr, e)
+            log.error("[WS] Client error: %s", e)
         finally:
             log.info("[WS] Client disconnected: %s", addr)
+            _log_event(self.shared_logs, "server", "CLIENT_DISCONNECTED",
+                       detail=str(addr))
 
-    async def _route(self, command: str, name: str, data: dict) -> dict:
-        """Map WebSocket command strings to worker IPC ops."""
+    async def _route(self, command: str, name: str, data: dict,
+                     websocket=None) -> dict:
 
-        # ── Registration (face + voice simultaneously) ────────────────────────
-        # Used when you want to enrol a brand-new identity in both modalities
-        # back-to-back in a single call.  The face capture happens first, then
-        # the voice session.
+        # ── Register face + voice ─────────────────────────────────────────
         if command == "register":
             if not name:
                 return {"status": "error", "message": "Name required"}
-            log.info("[ROUTE] Enrolling '%s' face + voice", name)
-            face_result  = await self._dispatch("face",  {"op": "enroll", "name": name})
-            voice_result = await self._dispatch("voice", {"op": "enroll", "name": name})
-            combined_ok  = (face_result.get("status")  == "success" and
-                            voice_result.get("status") == "success")
-            return {
-                "status": "success" if combined_ok else "partial",
-                "user":   name,
-                "face":   face_result,
-                "voice":  voice_result,
-            }
+            face_r  = await self._dispatch("face",
+                        {"op": "enroll", "name": name}, websocket)
+            voice_r = await self._dispatch("voice",
+                        {"op": "enroll", "name": name}, websocket)
+            ok = (face_r.get("status") == "success"
+                  and voice_r.get("status") == "success")
+            return {"status": "success" if ok else "partial",
+                    "user": name, "face": face_r, "voice": voice_r}
 
-        # ── Register face only ────────────────────────────────────────────────
+        # ── Register face only ────────────────────────────────────────────
         elif command == "register_face":
             if not name:
                 return {"status": "error", "message": "Name required"}
-            return await self._dispatch("face", {"op": "enroll", "name": name})
+            return await self._dispatch("face",
+                        {"op": "enroll", "name": name}, websocket)
 
-        # ── Register voice only ───────────────────────────────────────────────
+        elif command == "cancel_enroll_face":
+            self.face_cmd_q.put({"op": "cancel_enroll"})
+            return {"status": "success", "message": "Cancel signal sent"}
+
+        # ── Register voice only ───────────────────────────────────────────
         elif command == "register_voice":
             if not name:
                 return {"status": "error", "message": "Name required"}
-            return await self._dispatch("voice", {"op": "enroll", "name": name})
+            return await self._dispatch("voice",
+                        {"op": "enroll", "name": name}, websocket)
 
-        # ── Auth: voice (UART-triggered) ──────────────────────────────────────
-        elif command == "auth_voice":
-            return await self._dispatch("voice", {"op": "verify"})
-
-        # ── Auth: face (camera-triggered) ─────────────────────────────────────
+        # ── Auth face ─────────────────────────────────────────────────────
         elif command == "auth_face":
-            return await self._dispatch("face", {"op": "verify"})
+            return await self._dispatch("face", {"op": "verify"}, websocket)
 
-        # ── Delete identity ───────────────────────────────────────────────────
+        # ── Auth voice ────────────────────────────────────────────────────
+        elif command == "auth_voice":
+            return await self._dispatch("voice", {"op": "verify"}, websocket)
+
+        # ── Delete ────────────────────────────────────────────────────────
         elif command == "delete":
             if not name:
                 return {"status": "error", "message": "Name required"}
-            face_r  = await self._dispatch("face",  {"op": "delete", "name": name})
-            voice_r = await self._dispatch("voice", {"op": "delete", "name": name})
+            face_r  = await self._dispatch("face",
+                        {"op": "delete", "name": name})
+            voice_r = await self._dispatch("voice",
+                        {"op": "delete", "name": name})
             return {"status": "success", "face": face_r, "voice": voice_r}
 
-        # ── List identities ───────────────────────────────────────────────────
+        # ── List identities ───────────────────────────────────────────────
         elif command == "get_identities":
             face_r  = await self._dispatch("face",  {"op": "list"})
             voice_r = await self._dispatch("voice", {"op": "list"})
-            face_names  = face_r.get("data", [])
-            voice_names = voice_r.get("data", [])
-            all_names   = sorted(set(face_names) | set(voice_names))
-            return {"status": "success", "data": all_names,
-                    "face_only":  sorted(set(face_names)  - set(voice_names)),
-                    "voice_only": sorted(set(voice_names) - set(face_names))}
+            fn = face_r.get("data", [])
+            vn = voice_r.get("data", [])
+            return {"status": "success",
+                    "data":       sorted(set(fn) | set(vn)),
+                    "face_only":  sorted(set(fn) - set(vn)),
+                    "voice_only": sorted(set(vn) - set(fn))}
 
-        # ── Audit logs ────────────────────────────────────────────────────────
+        # ── Logs (in-memory) ──────────────────────────────────────────────
         elif command == "get_logs":
-            entries = list(self.shared_logs)   # snapshot
-            return {"status": "success", "data": entries}
+            return {"status": "success", "data": list(self.shared_logs)}
 
-        # ── Worker status / heartbeat ─────────────────────────────────────────
+        # ── Log file (CSV on disk) ────────────────────────────────────────
+        elif command == "get_log_file":
+            try:
+                if os.path.exists(LOG_CSV_FILE):
+                    with open(LOG_CSV_FILE, "r") as f:
+                        content = f.read()
+                    return {"status": "success", "csv": content,
+                            "filename": os.path.basename(LOG_CSV_FILE)}
+                return {"status": "success", "csv": "",
+                        "filename": "biometric_log.csv"}
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+
+        # ── Status ────────────────────────────────────────────────────────
         elif command == "status":
-            return {
-                "status": "success",
-                "face_busy":  self.face_busy.is_set(),
-                "voice_busy": self.voice_busy.is_set(),
-            }
+            return {"status": "success",
+                    "face_busy":  self.face_busy.is_set(),
+                    "voice_busy": self.voice_busy.is_set()}
+
+        # ── Shutdown ──────────────────────────────────────────────────────
+        elif command == "shutdown":
+            log.info("[WS] Shutdown requested by client")
+            _log_event(self.shared_logs, "server", "SHUTDOWN_REQUESTED")
+            self.face_cmd_q.put({"op": "stop"})
+            self.voice_cmd_q.put({"op": "stop"})
+            return {"status": "success", "message": "Shutting down…"}
 
         else:
-            return {"status": "error", "message": f"Unknown command '{command}'"}
+            return {"status": "error",
+                    "message": f"Unknown command '{command}'"}
 
 
 def _try_get(q: Queue):
-    """Non-blocking queue get; returns None if empty. Safe to call from executor."""
     try:
         return q.get_nowait()
     except Exception:
         return None
 
 
-async def run_server(orchestrator: OrchestratorServer, ip: str, port: int,
-                     stop_evt: asyncio.Event):
+async def run_server(orchestrator, ip, port, stop_evt):
     await orchestrator._init_locks()
-    async with serve(orchestrator.handle_client, "0.0.0.0", port):
-        log.info("[WS] WebSocket server live at ws://%s:%d", ip, port)
-        try:
-            await stop_evt.wait()
-        except asyncio.CancelledError:
-            pass
-    log.info("[WS] WebSocket server stopped")
+    async with serve(
+        orchestrator.handle_client, "0.0.0.0", port,
+        ping_interval=30, ping_timeout=120,
+        close_timeout=10, max_size=10*1024*1024,
+    ):
+        log.info("[WS] Server live at ws://%s:%d", ip, port)
+        try: await stop_evt.wait()
+        except asyncio.CancelledError: pass
+    log.info("[WS] Server stopped")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  ZEROCONF mDNS advertisement
-# ─────────────────────────────────────────────────────────────────────────────
-
-async def run_zeroconf(ip: str, port: int, stop_evt: asyncio.Event):
+async def run_zeroconf(ip, port, stop_evt):
     zc = Zeroconf(ip_version=IPVersion.V4Only)
     info = ServiceInfo(
         "_biometric-auth._tcp.local.",
         "BiometricServer._biometric-auth._tcp.local.",
-        addresses=[socket.inet_aton(ip)],
-        port=port,
-        properties={"version": "2.0.0", "workers": "face+voice"},
+        addresses=[socket.inet_aton(ip)], port=port,
+        properties={"version": "3.0.0", "workers": "face+voice"},
     )
     await zc.async_register_service(info)
-    log.info("[mDNS] Advertised service on %s:%d", ip, port)
-    try:
-        await stop_evt.wait()
-    except asyncio.CancelledError:
-        pass
+    log.info("[mDNS] Advertised on %s:%d", ip, port)
+    try: await stop_evt.wait()
+    except asyncio.CancelledError: pass
     finally:
         await zc.async_unregister_all_services()
         zc.close()
-        log.info("[mDNS] Advertisement stopped")
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  NETWORK SUPERVISOR
-#
-#  Per spec: the WS server must NOT come up until the Pi actually has a
-#  valid LAN IP (Wi-Fi/Ethernet associated). Internet access is NOT
-#  required — mDNS discovery and the WebSocket connection both only need
-#  client and server to share a LAN segment. If there's no LAN IP yet
-#  (or it's lost later), this loop checks again every 60s and (re)starts
-#  the WS+mDNS stack the moment a usable IP appears, using the now-correct
-#  IP for mDNS advertisement.
-# ─────────────────────────────────────────────────────────────────────────────
 
 LAN_CHECK_INTERVAL_S = 60.0
 
-async def run_network_supervisor(orchestrator: OrchestratorServer, port: int):
+async def run_network_supervisor(orchestrator, port):
     while True:
-        ip = await wait_for_lan_ip(poll_interval_s=LAN_CHECK_INTERVAL_S)
-        log.info("[NET] Starting WS + mDNS on LAN IP %s:%d", ip, port)
-
+        ip = await wait_for_lan_ip(LAN_CHECK_INTERVAL_S)
+        log.info("[NET] Starting on %s:%d", ip, port)
         stop_evt = asyncio.Event()
-        server_task   = asyncio.create_task(run_server(orchestrator, ip, port, stop_evt))
-        zeroconf_task = asyncio.create_task(run_zeroconf(ip, port, stop_evt))
-
-        # While serving, periodically re-check that we still have THE SAME
-        # LAN IP. If Wi-Fi drops or the DHCP lease changes, tear down and
-        # go back to waiting — re-advertising a stale/dead IP over mDNS is
-        # exactly the bug this replaces.
+        t1 = asyncio.create_task(run_server(orchestrator, ip, port, stop_evt))
+        t2 = asyncio.create_task(run_zeroconf(ip, port, stop_evt))
         try:
             while True:
                 await asyncio.sleep(LAN_CHECK_INTERVAL_S)
-                current_ip = get_local_ip()
-                if current_ip != ip:
-                    log.warning("[NET] LAN IP changed (%s -> %s) or lost — "
-                              "restarting WS + mDNS", ip, current_ip)
-                    break
+                if get_local_ip() != ip:
+                    log.warning("[NET] IP changed — restarting"); break
         finally:
             stop_evt.set()
-            await asyncio.gather(server_task, zeroconf_task,
-                                return_exceptions=True)
+            await asyncio.gather(t1, t2, return_exceptions=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1004,85 +1205,69 @@ async def run_network_supervisor(orchestrator: OrchestratorServer, port: int):
 def main():
     _pin(CORE_SERVER)
     mp.current_process().name = "orchestrator"
-
     port = 8765
 
+    _init_csv_log()
+
     log.info("=" * 70)
-    log.info("  Biometric Orchestrator  v2.2")
-    log.info("  Core map   : server=%s  face=%s  voice=%s", CORE_SERVER, CORE_FACE, CORE_VOICE)
-    log.info("  Auto face retry (unknown): %.0f s", AUTO_FACE_RETRY_S)
-    log.info("  WS/mDNS will wait for a LAN IP before starting "
-             "(re-checked every %.0fs; internet NOT required)", LAN_CHECK_INTERVAL_S)
+    log.info("  Biometric Orchestrator  v3.0")
+    log.info("  Cores: server=%s  face=%s  voice=%s", CORE_SERVER, CORE_FACE, CORE_VOICE)
+    log.info("  Face: autonomous verify (retry %.0fs on unknown)", AUTO_FACE_RETRY_S)
+    log.info("  Voice: autonomous UART listen, STANDBY default")
+    log.info("  Log: %s", LOG_CSV_FILE)
     log.info("=" * 70)
 
-    # ── Shared state ──────────────────────────────────────────────────────────
-    manager        = mp.Manager()
-    shared_state   = _make_shared_state(manager)
+    manager      = mp.Manager()
+    shared_state = _make_shared_state(manager)
     shared_logs    = shared_state["logs"]
     shared_users   = shared_state["users"]
     shared_display = shared_state["voice_status"]
 
-    _log_event(shared_logs, "server", "System startup")
+    _log_event(shared_logs, "server", "STARTUP")
 
-    # ── IPC queues + events ───────────────────────────────────────────────────
-    face_cmd_q  = Queue()
-    face_res_q  = Queue()
-    face_busy   = Event()
+    face_cmd_q,  face_res_q,  face_busy  = Queue(), Queue(), Event()
+    voice_cmd_q, voice_res_q, voice_busy = Queue(), Queue(), Event()
 
-    voice_cmd_q = Queue()
-    voice_res_q = Queue()
-    voice_busy  = Event()
-
-    # ── Launch workers ────────────────────────────────────────────────────────
     face_proc = Process(
         target=face_worker_process,
         args=(face_cmd_q, face_res_q, face_busy,
-             shared_logs, shared_users, shared_display),
-        name="face_worker",
-        daemon=True,
-    )
+              shared_logs, shared_users, shared_display),
+        name="face_worker", daemon=True)
     voice_proc = Process(
         target=voice_worker_process,
         args=(voice_cmd_q, voice_res_q, voice_busy,
-             shared_logs, shared_users, shared_display),
-        name="voice_worker",
-        daemon=True,
-    )
+              shared_logs, shared_users, shared_display),
+        name="voice_worker", daemon=True)
 
     face_proc.start()
     voice_proc.start()
-    log.info("[MAIN] Face  worker PID: %d", face_proc.pid)
-    log.info("[MAIN] Voice worker PID: %d", voice_proc.pid)
+    log.info("[MAIN] Face PID=%d  Voice PID=%d", face_proc.pid, voice_proc.pid)
 
-    # Wait for both workers to report ready (or fatal) before opening WS port
-    ready_count = 0
-    deadline    = time.time() + 30.0
-    while ready_count < 2 and time.time() < deadline:
+    # Wait for workers to report ready
+    ready = 0
+    deadline = time.time() + 30.0
+    while ready < 2 and time.time() < deadline:
         for q in (face_res_q, voice_res_q):
             msg = _try_get(q)
             if msg:
-                w = msg.get("worker", "?")
-                s = msg.get("status", "?")
-                log.info("[MAIN] Worker '%s' reported: %s", w, s)
-                if s in ("ready", "fatal"):
-                    ready_count += 1
+                w, s = msg.get("worker", "?"), msg.get("status", "?")
+                log.info("[MAIN] Worker '%s': %s", w, s)
+                if s in ("ready", "fatal"): ready += 1
         time.sleep(0.1)
 
-    if ready_count < 2:
-        log.warning("[MAIN] Not all workers reported ready within 30s — continuing anyway")
+    if ready < 2:
+        log.warning("[MAIN] Not all workers ready in 30s — continuing anyway")
 
-    # ── Build orchestrator ────────────────────────────────────────────────────
     orchestrator = OrchestratorServer(
-        face_cmd_q,  face_res_q,  face_busy,
+        face_cmd_q, face_res_q, face_busy,
         voice_cmd_q, voice_res_q, voice_busy,
-        shared_logs, shared_users,
-    )
+        shared_logs, shared_users)
 
-    # ── Graceful shutdown ─────────────────────────────────────────────────────
     loop = asyncio.get_event_loop()
 
     def _shutdown(sig, frame):
-        log.info("[MAIN] Signal %s received — shutting down", sig)
+        log.info("[MAIN] Signal %s — shutting down", sig)
+        _log_event(shared_logs, "server", "SHUTDOWN")
         face_cmd_q.put({"op": "stop"})
         voice_cmd_q.put({"op": "stop"})
         face_proc.join(timeout=5)
@@ -1093,16 +1278,12 @@ def main():
     signal.signal(signal.SIGINT,  _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
-    # ── Run the network supervisor ───────────────────────────────────────────
-    # This blocks (without busy-waiting — uses asyncio.sleep) until a real
-    # LAN IP is available, THEN opens the WS port and starts mDNS. If the
-    # IP later changes/disappears it tears down and re-waits automatically.
     try:
         loop.run_until_complete(run_network_supervisor(orchestrator, port))
     except (KeyboardInterrupt, asyncio.CancelledError):
         pass
     finally:
-        log.info("[MAIN] Event loop closed. Goodbye.")
+        log.info("[MAIN] Goodbye.")
         manager.shutdown()
 
 
