@@ -388,3 +388,8 @@ timestamp,method,event,user,confidence,second_best_user,second_best_score,reason
 2026-06-25 03:03:29,face,DENIED,junaid,0.2424,faizy,-0.0415,score 0.2424 below threshold 0.75,0.0,0.0,auto
 2026-06-25 03:03:33,server,SHUTDOWN,,0.0,,0.0,,0.0,0.0,
 2026-06-25 03:03:35,server,SHUTDOWN,,0.0,,0.0,,0.0,0.0,
+2026-06-25 03:03:57,server,STARTUP,,0.0,,0.0,,0.0,0.0,
+2026-06-25 03:04:13,face,DENIED,junaid,0.2348,faizy,0.0647,score 0.2348 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:04:22,face,DENIED,junaid,0.2798,faizy,0.0605,score 0.2798 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:04:30,face,DENIED,faizy,0.5834,junaid,0.5154,score 0.5834 below threshold 0.75,0.0,0.0,auto
+2026-06-25 03:04:40,server,SHUTDOWN,,0.0,,0.0,,0.0,0.0,
