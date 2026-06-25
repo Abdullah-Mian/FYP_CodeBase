@@ -590,3 +590,86 @@ timestamp,method,event,user,confidence,second_best_user,second_best_score,reason
 2026-06-25 22:43:02,face,DENIED,abd,0.7428,faizy,0.6491,score 0.7428 below threshold 0.75,0.0,0.0,auto
 2026-06-25 22:43:10,face,DENIED,abd,0.8438,faizy,0.7666,"ambiguous — gap 0.0772 < 0.1 (best=0.8438, 2nd=0.7666)",0.0,0.0,auto
 2026-06-25 22:43:15,voice,ENROLL_REJECTED_DUPLICATE,tva,0.9682,ava,0.0,duplicate,10.0,5894.1,
+2026-06-25 22:44:17,server,REBOOT_REQUESTED,,0.0,,0.0,,0.0,0.0,
+2026-06-25 22:44:19,server,SHUTDOWN,,0.0,,0.0,,0.0,0.0,
+2026-06-25 22:44:19,server,CLIENT_DISCONNECTED,,0.0,,0.0,,0.0,0.0,"('192.168.100.4', 52155)"
+2026-06-25 22:44:29,server,STARTUP,,0.0,,0.0,,0.0,0.0,
+2026-06-25 22:44:48,server,CLIENT_CONNECTED,,0.0,,0.0,,0.0,0.0,"('192.168.100.4', 65057)"
+2026-06-25 22:58:54,server,CLIENT_CONNECTED,,0.0,,0.0,,0.0,0.0,"('192.168.100.4', 55394)"
+2026-06-25 22:58:55,server,CLIENT_CONNECTED,,0.0,,0.0,,0.0,0.0,"('192.168.100.4', 55395)"
+2026-06-25 22:59:03,server,CLIENT_DISCONNECTED,,0.0,,0.0,,0.0,0.0,"('192.168.100.4', 55395)"
+2026-06-25 23:00:55,face,GRANTED,abd,0.7626,faizy,0.6331,ok,0.0,0.0,auto
+2026-06-25 23:01:21,server,SHUTDOWN,,0.0,,0.0,,0.0,0.0,
+2026-06-25 23:01:21,server,CLIENT_DISCONNECTED,,0.0,,0.0,,0.0,0.0,"('192.168.100.4', 65057)"
+2026-06-25 23:01:21,server,CLIENT_DISCONNECTED,,0.0,,0.0,,0.0,0.0,"('192.168.100.4', 55394)"
+2026-06-25 23:01:29,server,STARTUP,,0.0,,0.0,,0.0,0.0,
+2026-06-25 23:01:49,server,CLIENT_CONNECTED,,0.0,,0.0,,0.0,0.0,"('192.168.100.4', 55451)"
+2026-06-25 23:02:13,face,GRANTED,abd,0.9256,faizy,0.734,ok,0.0,0.0,auto
+2026-06-25 23:02:22,face,GRANTED,abd,0.8725,faizy,0.7005,ok,0.0,0.0,auto
+2026-06-25 23:02:27,voice,DENIED,abd,0.6363,ava,0.4416,below_threshold,2.24,1484.8,auto
+2026-06-25 23:02:31,face,DENIED,abd,0.7764,faizy,0.7278,"ambiguous — gap 0.0487 < 0.1 (best=0.7764, 2nd=0.7278)",0.0,0.0,auto
+2026-06-25 23:02:41,voice,DENIED,abd,0.6615,ava,0.3545,below_threshold,2.91,1801.0,auto
+2026-06-25 23:02:44,face,GRANTED,abd,0.8092,faizy,0.5961,ok,0.0,0.0,auto
+2026-06-25 23:02:52,face,DENIED,abd,0.8386,faizy,0.7733,"ambiguous — gap 0.0653 < 0.1 (best=0.8386, 2nd=0.7733)",0.0,0.0,auto
+2026-06-25 23:03:00,face,GRANTED,abd,0.8494,faizy,0.731,ok,0.0,0.0,auto
+2026-06-25 23:03:20,face,GRANTED,abd,0.8206,junaid,0.6594,ok,0.0,0.0,auto
+2026-06-25 23:03:26,voice,DENIED,abd,0.5824,ava,0.3891,below_threshold,4.42,2587.7,auto
+2026-06-25 23:03:29,face,DENIED,abd,0.6625,junaid,0.5575,score 0.6625 below threshold 0.75,0.0,0.0,auto
+2026-06-25 23:03:34,voice,DENIED,abd,0.6622,ava,0.5557,below_threshold,2.21,1341.3,auto
+2026-06-25 23:03:49,voice,DENIED,abd,0.6812,ava,0.3288,below_threshold,6.0,3556.6,auto
+2026-06-25 23:03:52,face,DENIED,abd,0.6508,yammar,0.5281,score 0.6508 below threshold 0.75,0.0,0.0,auto
+2026-06-25 23:03:59,voice,GRANTED,abd,0.7432,ava,0.3076,,3.46,2012.3,auto
+2026-06-25 23:04:10,face,DENIED,abd,0.7223,junaid,0.6095,score 0.7223 below threshold 0.75,0.0,0.0,auto
+2026-06-25 23:04:14,server,SHUTDOWN,,0.0,,0.0,,0.0,0.0,
+2026-06-25 23:04:14,server,CLIENT_DISCONNECTED,,0.0,,0.0,,0.0,0.0,"('192.168.100.4', 55451)"
+2026-06-25 23:04:24,server,STARTUP,,0.0,,0.0,,0.0,0.0,
+2026-06-25 23:04:39,server,CLIENT_CONNECTED,,0.0,,0.0,,0.0,0.0,"('192.168.100.4', 54350)"
+2026-06-25 23:04:40,server,CLIENT_DISCONNECTED,,0.0,,0.0,,0.0,0.0,"('192.168.100.4', 54350)"
+2026-06-25 23:04:43,face,GRANTED,abd,0.9096,faizy,0.7824,ok,0.0,0.0,auto
+2026-06-25 23:04:46,server,CLIENT_CONNECTED,,0.0,,0.0,,0.0,0.0,"('192.168.100.4', 54351)"
+2026-06-25 23:05:12,face,GRANTED,abd,0.8889,faizy,0.7428,ok,0.0,0.0,auto
+2026-06-25 23:05:26,face,GRANTED,abd,0.9324,faizy,0.6951,ok,0.0,0.0,auto
+2026-06-25 23:05:37,face,DENIED,abd,0.7862,faizy,0.7422,"ambiguous — gap 0.0440 < 0.1 (best=0.7862, 2nd=0.7422)",0.0,0.0,auto
+2026-06-25 23:05:45,face,GRANTED,abd,0.907,faizy,0.7081,ok,0.0,0.0,auto
+2026-06-25 23:06:20,face,GRANTED,abd,0.8229,yammar,0.5943,ok,0.0,0.0,auto
+2026-06-25 23:06:31,face,DENIED,junaid,0.5453,abd,0.4123,score 0.5453 below threshold 0.75,0.0,0.0,auto
+2026-06-25 23:06:45,voice,GRANTED,abd,0.794,ava,0.3644,,3.04,1965.7,auto
+2026-06-25 23:06:49,face,DENIED,junaid,0.3885,yammar,0.13,score 0.3885 below threshold 0.75,0.0,0.0,auto
+2026-06-25 23:06:57,face,GRANTED,abd,0.8335,faizy,0.6166,ok,0.0,0.0,auto
+2026-06-25 23:07:13,face,DENIED,junaid,0.6044,abd,0.5665,score 0.6044 below threshold 0.75,0.0,0.0,auto
+2026-06-25 23:07:16,voice,GRANTED,ava,0.9245,abd,0.249,,2.21,1369.2,auto
+2026-06-25 23:07:21,face,DENIED,junaid,0.6961,abd,0.6548,score 0.6961 below threshold 0.75,0.0,0.0,auto
+2026-06-25 23:07:27,voice,GRANTED,ava,0.8667,abd,0.2858,,2.14,1366.7,auto
+2026-06-25 23:07:29,face,DENIED,junaid,0.2704,faizy,0.0967,score 0.2704 below threshold 0.75,0.0,0.0,auto
+2026-06-25 23:07:37,face,GRANTED,abd,0.9116,faizy,0.6592,ok,0.0,0.0,auto
+2026-06-25 23:07:52,face,ATTEMPT_NO_CAPTURE,,0.0,,0.0,,0.0,0.0,auto — probe was None
+2026-06-25 23:08:12,server,CLIENT_CONNECTED,,0.0,,0.0,,0.0,0.0,"('192.168.100.4', 54357)"
+2026-06-25 23:08:13,server,CLIENT_CONNECTED,,0.0,,0.0,,0.0,0.0,"('192.168.100.4', 54358)"
+2026-06-25 23:09:17,face,DENIED,abd,0.7191,yammar,0.5218,score 0.7191 below threshold 0.75,0.0,0.0,auto
+2026-06-25 23:13:00,face,DELETED,abd,0.0,,0.0,,0.0,0.0,
+2026-06-25 23:13:07,face,DENIED,junaid,0.2668,faizy,0.0367,score 0.2668 below threshold 0.75,0.0,0.0,auto
+2026-06-25 23:13:22,voice,DELETED,abd,0.0,,0.0,,0.0,0.0,
+2026-06-25 23:14:22,server,REBOOT_REQUESTED,,0.0,,0.0,,0.0,0.0,
+2026-06-25 23:14:24,server,SHUTDOWN,,0.0,,0.0,,0.0,0.0,
+2026-06-25 23:14:24,server,CLIENT_DISCONNECTED,,0.0,,0.0,,0.0,0.0,"('192.168.100.4', 54357)"
+2026-06-25 23:14:24,server,CLIENT_DISCONNECTED,,0.0,,0.0,,0.0,0.0,"('192.168.100.4', 54358)"
+2026-06-25 23:14:24,server,CLIENT_DISCONNECTED,,0.0,,0.0,,0.0,0.0,"('192.168.100.4', 54351)"
+2026-06-25 23:14:33,server,STARTUP,,0.0,,0.0,,0.0,0.0,
+2026-06-25 23:14:52,server,CLIENT_CONNECTED,,0.0,,0.0,,0.0,0.0,"('192.168.100.4', 64445)"
+2026-06-25 23:14:52,server,CLIENT_CONNECTED,,0.0,,0.0,,0.0,0.0,"('192.168.100.4', 64441)"
+2026-06-25 23:14:52,server,CLIENT_DISCONNECTED,,0.0,,0.0,,0.0,0.0,"('192.168.100.4', 64441)"
+2026-06-25 23:14:52,server,CLIENT_DISCONNECTED,,0.0,,0.0,,0.0,0.0,"('192.168.100.4', 64445)"
+2026-06-25 23:15:09,face,DENIED,junaid,0.6779,faizy,0.4847,score 0.6779 below threshold 0.75,0.0,0.0,auto
+2026-06-25 23:15:24,face,DENIED,junaid,0.245,yammar,0.0339,score 0.2450 below threshold 0.75,0.0,0.0,auto
+2026-06-25 23:16:10,server,CLIENT_CONNECTED,,0.0,,0.0,,0.0,0.0,"('192.168.100.4', 64453)"
+2026-06-25 23:16:26,face,DENIED,junaid,0.3133,yammar,0.1387,score 0.3133 below threshold 0.75,0.0,0.0,auto
+2026-06-25 23:16:27,server,POWEROFF_REQUESTED,,0.0,,0.0,,0.0,0.0,
+2026-06-25 23:16:29,server,SHUTDOWN,,0.0,,0.0,,0.0,0.0,
+2026-06-25 23:16:29,server,CLIENT_DISCONNECTED,,0.0,,0.0,,0.0,0.0,"('192.168.100.4', 64453)"
+2026-06-25 23:16:37,server,STARTUP,,0.0,,0.0,,0.0,0.0,
+2026-06-25 23:17:05,face,DENIED,faizy,0.6004,junaid,0.505,score 0.6004 below threshold 0.75,0.0,0.0,auto
+2026-06-25 23:17:50,face,DENIED,junaid,0.5359,yammar,0.4773,score 0.5359 below threshold 0.75,0.0,0.0,auto
+2026-06-25 23:19:57,face,DENIED,junaid,0.484,faizy,0.27,score 0.4840 below threshold 0.75,0.0,0.0,auto
+2026-06-25 23:20:15,face,DENIED,yammar,0.4637,junaid,0.4342,score 0.4637 below threshold 0.75,0.0,0.0,auto
+2026-06-25 23:21:05,face,DENIED,junaid,0.3112,yammar,0.1506,score 0.3112 below threshold 0.75,0.0,0.0,auto
+2026-06-25 23:21:14,face,DENIED,junaid,0.3303,yammar,0.1535,score 0.3303 below threshold 0.75,0.0,0.0,auto
