@@ -184,13 +184,15 @@ def face_worker_process(cmd_q: Queue, res_q: Queue, busy_evt: Event,
         import cv2
         import numpy as np
         sys.path.insert(0, os.path.dirname(__file__))
+        import main as _main_mod
         from main import (
             TFTDisplay, PiCamera, BlazeFaceDetector,
             enroll_face, capture_probe, match_probe,
             check_enrollment_duplicate,
             load_database, save_database,
             l2_normalize,
-            SIMILARITY_THRESHOLD, MIN_GALLERY_SIZE, DATABASE_FILE,
+            SIMILARITY_THRESHOLD, MIN_SCORE_GAP, MIN_GALLERY_SIZE,
+            DATABASE_FILE,
             MAX_FACES_IN_FRAME, ENROLL_DUPLICATE_THRESHOLD,
         )
     except ImportError as e:
@@ -375,6 +377,40 @@ def face_worker_process(cmd_q: Queue, res_q: Queue, busy_evt: Event,
 
         elif op == "cancel_enroll":
             return {"status": "success", "message": "Nothing active to cancel"}
+
+        # ── GET THRESHOLDS ───────────────────────────────────────
+        elif op == "get_thresholds":
+            return {"status": "success",
+                    "face_similarity":       _main_mod.SIMILARITY_THRESHOLD,
+                    "face_min_score_gap":    _main_mod.MIN_SCORE_GAP,
+                    "face_enroll_duplicate": _main_mod.ENROLL_DUPLICATE_THRESHOLD,
+                    "face_min_gallery":      _main_mod.MIN_GALLERY_SIZE}
+
+        # ── SET THRESHOLDS ───────────────────────────────────────
+        elif op == "set_thresholds":
+            changed = []
+            if "face_similarity" in cmd:
+                v = float(cmd["face_similarity"])
+                if 0.0 < v < 1.0:
+                    _main_mod.SIMILARITY_THRESHOLD = v
+                    changed.append(f"face_similarity={v:.4f}")
+            if "face_min_score_gap" in cmd:
+                v = float(cmd["face_min_score_gap"])
+                if 0.0 <= v < 1.0:
+                    _main_mod.MIN_SCORE_GAP = v
+                    changed.append(f"face_min_score_gap={v:.4f}")
+            if "face_enroll_duplicate" in cmd:
+                v = float(cmd["face_enroll_duplicate"])
+                if 0.0 < v < 1.0:
+                    _main_mod.ENROLL_DUPLICATE_THRESHOLD = v
+                    changed.append(f"face_enroll_duplicate={v:.4f}")
+            if "face_min_gallery" in cmd:
+                v = int(cmd["face_min_gallery"])
+                if 0 <= v <= 10:
+                    _main_mod.MIN_GALLERY_SIZE = v
+                    changed.append(f"face_min_gallery={v}")
+            log.info("[FACE] Thresholds updated: %s", ", ".join(changed) if changed else "none")
+            return {"status": "success", "changed": changed}
 
         else:
             return {"status": "error", "message": f"Unknown op '{op}'"}
@@ -564,6 +600,7 @@ def voice_worker_process(cmd_q: Queue, res_q: Queue, busy_evt: Event,
         import numpy as np
         import serial
         sys.path.insert(0, os.path.dirname(__file__))
+        import rpi4_ecapa_voice_biometric_v2 as _voice_mod
         from rpi4_ecapa_voice_biometric_v2 import (
             UARTReceiver, ONNXAuthenticator,
             enrolled_speakers, raw_to_features,
@@ -737,7 +774,7 @@ def voice_worker_process(cmd_q: Queue, res_q: Queue, busy_evt: Event,
 
             # Duplicate check (same as standalone enroll_speaker)
             best_n, best_s, _, _ = _best_match(emb)
-            if best_s >= DUPLICATE_THRESHOLD:
+            if best_s >= _voice_mod.DUPLICATE_THRESHOLD:
                 _vs(f"DUPLICATE of '{best_n}' ({best_s:.2f})")
                 _log_event(shared_logs, "voice", "ENROLL_REJECTED_DUPLICATE",
                            user=name, confidence=best_s,
@@ -790,7 +827,7 @@ def voice_worker_process(cmd_q: Queue, res_q: Queue, busy_evt: Event,
                 return {"status": "error", "message": f"Quality check: {e}"}
 
             best_name, best_score, s2n, s2s = _best_match(emb)
-            granted = best_score >= VERIFY_THRESHOLD
+            granted = best_score >= _voice_mod.VERIFY_THRESHOLD
             tag = "GRANTED" if granted else "DENIED"
 
             _log_event(shared_logs, "voice", tag,
@@ -822,6 +859,28 @@ def voice_worker_process(cmd_q: Queue, res_q: Queue, busy_evt: Event,
         elif op == "list":
             names = [os.path.basename(p)[:-4] for p in enrolled_speakers()]
             return {"status": "success", "data": names}
+
+        # ── GET THRESHOLDS ───────────────────────────────────────
+        elif op == "get_thresholds":
+            return {"status": "success",
+                    "voice_verify":    _voice_mod.VERIFY_THRESHOLD,
+                    "voice_duplicate": _voice_mod.DUPLICATE_THRESHOLD}
+
+        # ── SET THRESHOLDS ───────────────────────────────────────
+        elif op == "set_thresholds":
+            changed = []
+            if "voice_verify" in cmd:
+                v = float(cmd["voice_verify"])
+                if 0.0 < v < 1.0:
+                    _voice_mod.VERIFY_THRESHOLD = v
+                    changed.append(f"voice_verify={v:.4f}")
+            if "voice_duplicate" in cmd:
+                v = float(cmd["voice_duplicate"])
+                if 0.0 < v < 1.0:
+                    _voice_mod.DUPLICATE_THRESHOLD = v
+                    changed.append(f"voice_duplicate={v:.4f}")
+            log.info("[VOICE] Thresholds updated: %s", ", ".join(changed) if changed else "none")
+            return {"status": "success", "changed": changed}
 
         else:
             return {"status": "error", "message": f"Unknown op '{op}'"}
@@ -891,7 +950,7 @@ def voice_worker_process(cmd_q: Queue, res_q: Queue, busy_evt: Event,
                 continue
 
             best_name, best_score, s2n, s2s = _best_match(emb)
-            granted = best_score >= VERIFY_THRESHOLD
+            granted = best_score >= _voice_mod.VERIFY_THRESHOLD
             tag = "GRANTED" if granted else "DENIED"
 
             log.info("[VOICE][AUTO] %s  %s  %.4f  (audio=%.1fs, inf=%.0fms)",
@@ -1094,6 +1153,61 @@ class OrchestratorServer:
             voice_r = await self._dispatch("voice",
                         {"op": "delete", "name": name})
             return {"status": "success", "face": face_r, "voice": voice_r}
+
+        # ── Delete face only ──────────────────────────────────────────────
+        elif command == "delete_face":
+            if not name:
+                return {"status": "error", "message": "Name required"}
+            face_r = await self._dispatch("face",
+                        {"op": "delete", "name": name})
+            return {"status": "success", "face": face_r,
+                    "voice": {"status": "skipped"}}
+
+        # ── Delete voice only ─────────────────────────────────────────────
+        elif command == "delete_voice":
+            if not name:
+                return {"status": "error", "message": "Name required"}
+            voice_r = await self._dispatch("voice",
+                        {"op": "delete", "name": name})
+            return {"status": "success",
+                    "face": {"status": "skipped"},
+                    "voice": voice_r}
+
+        # ── Get thresholds ────────────────────────────────────────────────
+        elif command == "get_thresholds":
+            face_r  = await self._dispatch("face",  {"op": "get_thresholds"})
+            voice_r = await self._dispatch("voice", {"op": "get_thresholds"})
+            merged = {"status": "success"}
+            if face_r.get("status") == "success":
+                for k in ("face_similarity", "face_min_score_gap",
+                           "face_enroll_duplicate", "face_min_gallery"):
+                    if k in face_r:
+                        merged[k] = face_r[k]
+            if voice_r.get("status") == "success":
+                for k in ("voice_verify", "voice_duplicate"):
+                    if k in voice_r:
+                        merged[k] = voice_r[k]
+            return merged
+
+        # ── Set thresholds ────────────────────────────────────────────────
+        elif command == "set_thresholds":
+            face_keys  = {k: data[k] for k in
+                          ("face_similarity", "face_min_score_gap",
+                           "face_enroll_duplicate", "face_min_gallery")
+                          if k in data}
+            voice_keys = {k: data[k] for k in
+                          ("voice_verify", "voice_duplicate")
+                          if k in data}
+            changed = []
+            if face_keys:
+                fr = await self._dispatch("face",
+                        {"op": "set_thresholds", **face_keys})
+                changed.extend(fr.get("changed", []))
+            if voice_keys:
+                vr = await self._dispatch("voice",
+                        {"op": "set_thresholds", **voice_keys})
+                changed.extend(vr.get("changed", []))
+            return {"status": "success", "changed": changed}
 
         # ── List identities ───────────────────────────────────────────────
         elif command == "get_identities":

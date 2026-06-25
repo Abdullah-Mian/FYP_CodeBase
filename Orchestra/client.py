@@ -1,25 +1,20 @@
 #!/usr/bin/env python3
 """
-Biometric Authentication Client  v4.0  ·  Orchestra.py front-end
+Biometric Authentication Client  v5.0  ·  Orchestra.py front-end
 ─────────────────────────────────────────────────────────────────
 Professional Textual TUI — runs on Windows 11 laptop,
 talks to Raspberry Pi 4 (Orchestra.py) over WebSocket / mDNS.
 
-Changes from v3 → v4
-  ✓  Removed: "Register (Face + Voice)" button
-  ✓  Removed: "Shutdown Server" button
-  ✓  Added:   Settings panel (⚙) — theme, server URL, poll interval,
-               log-save folder, auto-reconnect toggle
-  ✓  Fixed:   WebSocket race condition — log-poll is now skipped whenever
-               a command is in flight, eliminating "delete ignores me" bugs
-  ✓  Fixed:   Delete User — confirmation dialog + up to 3 auto-retries +
-               rich feedback on every outcome
-  ✓  Fixed:   Log download — timestamped filename (never overwrites),
-               up to 3 retries, falls back to home dir on permission error
-  ✓  Fixed:   Reconnect — exponential back-off (2 → 5 → 10 → 20 → 30 → 60s),
-               clears mDNS seen-set so server restart is always re-detected,
-               supports manual URL override in Settings
-  ✓  Settings persist across sessions (~/.biometric_client_settings.json)
+Changes from v4 → v5
+  ✓  Added:   Delete mode selector — delete face only, voice only, or both
+  ✓  Added:   Threshold tuning panel in Settings — face similarity, min gap,
+               enroll duplicate, min gallery, voice verify, voice duplicate
+  ✓  Added:   Thresholds auto-fetched from server on connect
+  ✓  Added:   Thresholds pushed to server immediately on save
+  ✓  Server:  New commands — delete_face, delete_voice, get_thresholds,
+               set_thresholds (face + voice workers respond to threshold ops)
+  ✓  Server:  Workers use module-level globals so threshold changes take
+               effect in match_probe / check_enrollment_duplicate immediately
 
 Install (once on Windows):
     pip install "textual>=0.52" websockets zeroconf
@@ -60,7 +55,7 @@ from websockets.exceptions import ConnectionClosed, WebSocketException
 #  Constants
 # ─────────────────────────────────────────────────────────────────────────────
 
-APP_VERSION      = "4.0"
+APP_VERSION      = "5.0"
 SERVICE_TYPE     = "_biometric-auth._tcp.local."
 DEFAULT_POLL_S   = 3.0
 DEFAULT_LOG_DIR  = str(Path.home())
@@ -81,6 +76,13 @@ _DEFAULTS: dict = {
     "poll_interval":  DEFAULT_POLL_S,
     "log_dir":        DEFAULT_LOG_DIR,
     "auto_reconnect": True,
+    # ── Thresholds (fetched from server on connect, editable in Settings) ──
+    "face_similarity":       0.75,
+    "face_min_score_gap":    0.10,
+    "face_enroll_duplicate": 0.80,
+    "face_min_gallery":      2,
+    "voice_verify":          0.70,
+    "voice_duplicate":       0.72,
 }
 
 
@@ -227,6 +229,12 @@ class SettingsScreen(Screen):
         text-style: italic;
         margin-top: 1;
     }
+
+    #stg-hint2 {
+        color: $text-muted;
+        text-style: italic;
+        margin-top: 1;
+    }
     """
 
     def __init__(self, settings: dict, on_save):
@@ -290,6 +298,60 @@ class SettingsScreen(Screen):
                     id="s-theme",
                 )
 
+            # ── Thresholds ────────────────────────────────────────────────
+            yield Static("◈  THRESHOLDS  (Face)", classes="stg-section")
+
+            with Horizontal(classes="stg-row"):
+                yield Label("Similarity  (verify)", classes="stg-lbl")
+                yield Input(
+                    value=str(s.get("face_similarity", 0.75)),
+                    placeholder="0.75",
+                    id="s-face-sim", classes="stg-val",
+                )
+            with Horizontal(classes="stg-row"):
+                yield Label("Min Score Gap", classes="stg-lbl")
+                yield Input(
+                    value=str(s.get("face_min_score_gap", 0.10)),
+                    placeholder="0.10",
+                    id="s-face-gap", classes="stg-val",
+                )
+            with Horizontal(classes="stg-row"):
+                yield Label("Enroll Dup Threshold", classes="stg-lbl")
+                yield Input(
+                    value=str(s.get("face_enroll_duplicate", 0.80)),
+                    placeholder="0.80",
+                    id="s-face-dup", classes="stg-val",
+                )
+            with Horizontal(classes="stg-row"):
+                yield Label("Min Gallery Size", classes="stg-lbl")
+                yield Input(
+                    value=str(s.get("face_min_gallery", 2)),
+                    placeholder="2",
+                    id="s-face-gal", classes="stg-val",
+                )
+
+            yield Static("◈  THRESHOLDS  (Voice)", classes="stg-section")
+
+            with Horizontal(classes="stg-row"):
+                yield Label("Verify Threshold", classes="stg-lbl")
+                yield Input(
+                    value=str(s.get("voice_verify", 0.70)),
+                    placeholder="0.70",
+                    id="s-voice-ver", classes="stg-val",
+                )
+            with Horizontal(classes="stg-row"):
+                yield Label("Enroll Dup Threshold", classes="stg-lbl")
+                yield Input(
+                    value=str(s.get("voice_duplicate", 0.72)),
+                    placeholder="0.72",
+                    id="s-voice-dup", classes="stg-val",
+                )
+
+            yield Static(
+                "  Thresholds are pushed to the server immediately on save.",
+                id="stg-hint2",
+            )
+
             # ── Buttons ───────────────────────────────────────────────────
             with Horizontal(id="stg-footer"):
                 yield Button("✕  Cancel",      id="s-cancel", variant="default")
@@ -321,12 +383,31 @@ class SettingsScreen(Screen):
             except Exception:
                 pass
 
+            # ── Thresholds ────────────────────────────────────────────
+            def _float_or(id_, fallback):
+                try:
+                    return float(self.query_one(id_, Input).value.strip())
+                except (ValueError, Exception):
+                    return fallback
+
+            def _int_or(id_, fallback):
+                try:
+                    return int(self.query_one(id_, Input).value.strip())
+                except (ValueError, Exception):
+                    return fallback
+
             self._s.update({
-                "manual_url":     url,
-                "auto_reconnect": ar,
-                "poll_interval":  poll,
-                "log_dir":        log_dir or DEFAULT_LOG_DIR,
-                "theme":          theme,
+                "manual_url":          url,
+                "auto_reconnect":      ar,
+                "poll_interval":       poll,
+                "log_dir":             log_dir or DEFAULT_LOG_DIR,
+                "theme":               theme,
+                "face_similarity":       _float_or("#s-face-sim", 0.75),
+                "face_min_score_gap":    _float_or("#s-face-gap", 0.10),
+                "face_enroll_duplicate": _float_or("#s-face-dup", 0.80),
+                "face_min_gallery":      _int_or("#s-face-gal", 2),
+                "voice_verify":          _float_or("#s-voice-ver", 0.70),
+                "voice_duplicate":       _float_or("#s-voice-dup", 0.72),
             })
             self._on_save(self._s)
 
@@ -441,6 +522,7 @@ class BiometricClient(App):
 
     Button { width: 100%; margin-top: 1; }
     Input  { margin-top: 1; }
+    #del-mode { width: 100%; margin-top: 1; }
 
     /* ── Main area ───────────────────────────────────────────────────────── */
     #main-area { width: 1fr; padding: 1 2; }
@@ -524,6 +606,15 @@ class BiometricClient(App):
                 yield Static("◈ MANAGE USERS", classes="section-label")
                 yield Button("↺  Refresh Users", id="btn-list",   variant="default")
                 yield Input(placeholder="Name to delete…", id="del-name")
+                yield Select(
+                    options=[
+                        ("Face + Voice",  "both"),
+                        ("Face Only",     "face"),
+                        ("Voice Only",    "voice"),
+                    ],
+                    value="both",
+                    id="del-mode",
+                )
                 yield Button("Delete User",      id="btn-delete", variant="error")
 
                 yield Static("", classes="divider")
@@ -632,9 +723,10 @@ class BiometricClient(App):
             self._set_status("ONLINE", "online")
             self._sys_log("[green]✓ Connected to server.[/green]")
             self.notify("Server online", severity="information")
-            # Refresh user list immediately after connecting
+            # Refresh user list + fetch thresholds immediately after connecting
             async with self._cmd_lock:
                 await self._refresh_users_locked()
+                await self._fetch_thresholds_locked()
             self._start_log_polling()
 
         except Exception as exc:
@@ -824,18 +916,26 @@ class BiometricClient(App):
             if not name:
                 self.notify("Enter a name to delete.", severity="warning")
                 return
-            # Capture name in closure so input changes after dialog won't matter
-            captured = name
+            # Read delete mode
+            try:
+                mode_val = self.query_one("#del-mode", Select).value
+                mode = str(mode_val) if mode_val is not None and mode_val is not Select.BLANK else "both"
+            except Exception:
+                mode = "both"
+            mode_label = {"face": "face only", "voice": "voice only"}.get(mode, "face + voice")
+            # Capture in closure
+            captured_name = name
+            captured_mode = mode
 
             def _confirmed():
                 self.run_worker(
-                    self._delete_worker(captured),
+                    self._delete_worker(captured_name, captured_mode),
                     name="delete-user",
                 )
 
             self.push_screen(ConfirmScreen(
                 "⚠  Confirm Delete",
-                f'Permanently delete  "{captured}"  (face + voice)?',
+                f'Delete  "{captured_name}"  ({mode_label})?',
                 _confirmed,
             ))
             return
@@ -952,13 +1052,18 @@ class BiometricClient(App):
     #  Delete with confirmation + retry  (runs inside cmd_lock via _delete_worker)
     # ─────────────────────────────────────────────────────────────────────────
 
-    async def _delete_worker(self, name: str) -> None:
+    async def _delete_worker(self, name: str, mode: str = "both") -> None:
         async with self._cmd_lock:
-            await self._delete_locked(name)
+            await self._delete_locked(name, mode)
 
-    async def _delete_locked(self, name: str, max_retries: int = 3) -> None:
-        self._action(f"Deleting {name}…")
-        self._sys_log(f"\n[yellow]► Delete [bold]{name}[/bold]…[/yellow]")
+    async def _delete_locked(self, name: str, mode: str = "both",
+                             max_retries: int = 3) -> None:
+        mode_label = {"face": "face only", "voice": "voice only"}.get(mode, "face + voice")
+        self._action(f"Deleting {name} ({mode_label})…")
+        self._sys_log(f"\n[yellow]► Delete [bold]{name}[/bold] ({mode_label})…[/yellow]")
+
+        # Choose the correct server command
+        cmd_name = {"face": "delete_face", "voice": "delete_voice"}.get(mode, "delete")
 
         for attempt in range(1, max_retries + 1):
             if not self.ws:
@@ -968,7 +1073,7 @@ class BiometricClient(App):
                 return
 
             res = await self._send(
-                {"command": "delete", "name": name}, timeout=30.0)
+                {"command": cmd_name, "name": name}, timeout=30.0)
 
             if res is None:
                 if attempt < max_retries:
@@ -986,12 +1091,14 @@ class BiometricClient(App):
 
             f_r  = res.get("face",  {}) or {}
             v_r  = res.get("voice", {}) or {}
-            f_ok = f_r.get("status") == "success"
-            v_ok = v_r.get("status") == "success"
+            f_ok = f_r.get("status") in ("success", "skipped")
+            v_ok = v_r.get("status") in ("success", "skipped")
+            f_del = f_r.get("status") == "success"
+            v_del = v_r.get("status") == "success"
 
-            if f_ok or v_ok:
-                face_tag  = "[green]✓[/green]" if f_ok else "[dim]—[/dim]"
-                voice_tag = "[green]✓[/green]" if v_ok else "[dim]—[/dim]"
+            if f_del or v_del:
+                face_tag  = "[green]✓[/green]" if f_del else ("[dim]skip[/dim]" if f_r.get("status") == "skipped" else "[dim]—[/dim]")
+                voice_tag = "[green]✓[/green]" if v_del else ("[dim]skip[/dim]" if v_r.get("status") == "skipped" else "[dim]—[/dim]")
                 self._sys_log(
                     f"[green]  ✓ Deleted [bold]{name}[/bold]  "
                     f"│  Face: {face_tag}  │  Voice: {voice_tag}[/green]")
@@ -1001,10 +1108,10 @@ class BiometricClient(App):
                 self._action("Ready")
                 return
 
-            # Both workers reported not-found → no point retrying
+            # Workers reported not-found → no point retrying
             reason = (f_r.get("message", "")
                       or v_r.get("message", "")
-                      or "User not found in either database.")
+                      or "User not found in the selected database(s).")
             self._sys_log(f"[red]  ✘ {reason}[/red]")
             self.notify(reason, title="Delete failed", severity="error")
             self._action("Ready")
@@ -1106,6 +1213,14 @@ class BiometricClient(App):
     # ─────────────────────────────────────────────────────────────────────────
 
     def action_settings(self) -> None:
+        # Snapshot threshold keys so we can detect changes
+        _THRESH_KEYS = (
+            "face_similarity", "face_min_score_gap",
+            "face_enroll_duplicate", "face_min_gallery",
+            "voice_verify", "voice_duplicate",
+        )
+        old_thresholds = {k: self._settings.get(k) for k in _THRESH_KEYS}
+
         def _on_save(new_s: dict) -> None:
             old_theme = self._settings.get("theme")
             old_poll  = self._settings.get("poll_interval")
@@ -1117,6 +1232,13 @@ class BiometricClient(App):
 
             if new_s.get("poll_interval") != old_poll and self.ws:
                 self._start_log_polling()
+
+            # Push thresholds to server if any changed
+            thresh_changed = any(
+                new_s.get(k) != old_thresholds.get(k) for k in _THRESH_KEYS)
+            if thresh_changed and self.ws:
+                self.run_worker(self._push_thresholds(),
+                                name="push-thresholds")
 
             self._sys_log("[green]✓ Settings saved.[/green]")
 
@@ -1168,6 +1290,56 @@ class BiometricClient(App):
             f"both={n_both}  "
             f"face-only={len(face_only)}  "
             f"voice-only={len(voice_only)}[/cyan]")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    #  Threshold helpers  (called inside cmd_lock)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def _fetch_thresholds_locked(self) -> None:
+        """Fetch current thresholds from server and update local settings."""
+        res = await self._send({"command": "get_thresholds"}, timeout=10.0)
+        if res is None or res.get("status") != "success":
+            self._sys_log("[yellow]Could not fetch thresholds from server.[/yellow]")
+            return
+        _THRESH_KEYS = (
+            "face_similarity", "face_min_score_gap",
+            "face_enroll_duplicate", "face_min_gallery",
+            "voice_verify", "voice_duplicate",
+        )
+        updated = []
+        for k in _THRESH_KEYS:
+            if k in res:
+                self._settings[k] = res[k]
+                updated.append(f"{k}={res[k]}")
+        _save_settings(self._settings)
+        if updated:
+            self._sys_log(
+                f"[cyan]Thresholds synced: {', '.join(updated)}[/cyan]")
+
+    async def _push_thresholds(self) -> None:
+        """Push local threshold settings to the server (runs in cmd_lock)."""
+        async with self._cmd_lock:
+            payload = {
+                "command":               "set_thresholds",
+                "face_similarity":       self._settings.get("face_similarity", 0.75),
+                "face_min_score_gap":    self._settings.get("face_min_score_gap", 0.10),
+                "face_enroll_duplicate": self._settings.get("face_enroll_duplicate", 0.80),
+                "face_min_gallery":      self._settings.get("face_min_gallery", 2),
+                "voice_verify":          self._settings.get("voice_verify", 0.70),
+                "voice_duplicate":       self._settings.get("voice_duplicate", 0.72),
+            }
+            res = await self._send(payload, timeout=10.0)
+            if res and res.get("status") == "success":
+                changed = res.get("changed", [])
+                if changed:
+                    self._sys_log(
+                        f"[green]✓ Thresholds pushed: "
+                        f"{', '.join(changed)}[/green]")
+                else:
+                    self._sys_log("[dim]Thresholds unchanged.[/dim]")
+            else:
+                self._sys_log(
+                    "[red]✘ Failed to push thresholds to server.[/red]")
 
     # ─────────────────────────────────────────────────────────────────────────
     #  Result display helpers
