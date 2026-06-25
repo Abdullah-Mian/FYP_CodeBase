@@ -673,3 +673,5 @@ timestamp,method,event,user,confidence,second_best_user,second_best_score,reason
 2026-06-25 23:20:15,face,DENIED,yammar,0.4637,junaid,0.4342,score 0.4637 below threshold 0.75,0.0,0.0,auto
 2026-06-25 23:21:05,face,DENIED,junaid,0.3112,yammar,0.1506,score 0.3112 below threshold 0.75,0.0,0.0,auto
 2026-06-25 23:21:14,face,DENIED,junaid,0.3303,yammar,0.1535,score 0.3303 below threshold 0.75,0.0,0.0,auto
+2026-06-25 23:24:43,face,DENIED,junaid,0.3385,yammar,0.2206,score 0.3385 below threshold 0.75,0.0,0.0,auto
+2026-06-25 23:25:28,server,SHUTDOWN,,0.0,,0.0,,0.0,0.0,

@@ -1,0 +1,17 @@
+# PyTorch and Torchvision for Raspberry Pi (ARM64/aarch64)
+# Install with: pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
+
+torch>=2.0.0
+torchvision>=0.15.0
+
+# Computer Vision
+opencv-python>=4.8.0
+opencv-contrib-python>=4.8.0
+
+# Core dependencies
+numpy>=1.24.0,<2.0.0
+pillow>=10.0.0
+requests>=2.31.0
+
+# Note: picamera2 is installed via apt, not pip
+# Run: sudo apt install -y python3-picamera2 python3-libcamera python3-kms++
