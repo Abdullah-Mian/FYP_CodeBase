@@ -1251,29 +1251,6 @@ class OrchestratorServer:
             self.voice_cmd_q.put({"op": "stop"})
             return {"status": "success", "message": "Shutting down…"}
 
-        # ── Reboot Pi ─────────────────────────────────────────────────────
-        elif command == "reboot":
-            log.info("[WS] Reboot requested by client")
-            _log_event(self.shared_logs, "server", "REBOOT_REQUESTED")
-            self.face_cmd_q.put({"op": "stop"})
-            self.voice_cmd_q.put({"op": "stop"})
-            # Schedule reboot after giving the WS response time to send
-            import subprocess as _sp
-            asyncio.get_event_loop().call_later(
-                2.0, lambda: _sp.Popen(["sudo", "reboot"]))
-            return {"status": "success", "message": "Rebooting…"}
-
-        # ── Power off Pi ──────────────────────────────────────────────────
-        elif command == "poweroff":
-            log.info("[WS] Power off requested by client")
-            _log_event(self.shared_logs, "server", "POWEROFF_REQUESTED")
-            self.face_cmd_q.put({"op": "stop"})
-            self.voice_cmd_q.put({"op": "stop"})
-            import subprocess as _sp
-            asyncio.get_event_loop().call_later(
-                2.0, lambda: _sp.Popen(["sudo", "poweroff"]))
-            return {"status": "success", "message": "Powering off…"}
-
         else:
             return {"status": "error",
                     "message": f"Unknown command '{command}'"}

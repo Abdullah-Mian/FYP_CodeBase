@@ -575,3 +575,18 @@ timestamp,method,event,user,confidence,second_best_user,second_best_score,reason
 2026-06-25 22:31:56,face,ENROLLED,abd,0.0,,0.0,,0.0,0.0,after 1 attempt(s)
 2026-06-25 22:32:04,face,GRANTED,abd,0.966,faizy,0.7381,ok,0.0,0.0,auto
 2026-06-25 22:32:08,server,CLIENT_DISCONNECTED,,0.0,,0.0,,0.0,0.0,"('192.168.100.4', 49886)"
+2026-06-25 22:40:04,server,SHUTDOWN,,0.0,,0.0,,0.0,0.0,
+2026-06-25 22:40:12,server,STARTUP,,0.0,,0.0,,0.0,0.0,
+2026-06-25 22:40:19,server,CLIENT_CONNECTED,,0.0,,0.0,,0.0,0.0,"('192.168.100.4', 52155)"
+2026-06-25 22:40:31,face,GRANTED,abd,0.8673,faizy,0.6629,ok,0.0,0.0,auto
+2026-06-25 22:40:45,face,DELETED,abd,0.0,,0.0,,0.0,0.0,
+2026-06-25 22:40:57,face,ENROLLED,abd,0.0,,0.0,,0.0,0.0,after 1 attempt(s)
+2026-06-25 22:42:11,voice,DENIED,abd,0.5978,ava,0.5934,below_threshold,2.05,1291.4,auto
+2026-06-25 22:42:11,face,DENIED,abd,0.6866,faizy,0.6731,score 0.6866 below threshold 0.75,0.0,0.0,auto
+2026-06-25 22:42:21,voice,GRANTED,abd,0.7268,ava,0.4627,,3.65,2222.8,auto
+2026-06-25 22:42:24,face,DENIED,junaid,0.3005,abd,0.1404,score 0.3005 below threshold 0.75,0.0,0.0,auto
+2026-06-25 22:42:39,face,DENIED,abd,0.7785,faizy,0.7293,"ambiguous — gap 0.0492 < 0.1 (best=0.7785, 2nd=0.7293)",0.0,0.0,auto
+2026-06-25 22:42:45,voice,GRANTED,ava,0.9306,abd,0.2438,,6.0,3570.4,auto
+2026-06-25 22:43:02,face,DENIED,abd,0.7428,faizy,0.6491,score 0.7428 below threshold 0.75,0.0,0.0,auto
+2026-06-25 22:43:10,face,DENIED,abd,0.8438,faizy,0.7666,"ambiguous — gap 0.0772 < 0.1 (best=0.8438, 2nd=0.7666)",0.0,0.0,auto
+2026-06-25 22:43:15,voice,ENROLL_REJECTED_DUPLICATE,tva,0.9682,ava,0.0,duplicate,10.0,5894.1,

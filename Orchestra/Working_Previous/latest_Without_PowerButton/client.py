@@ -625,11 +625,6 @@ class BiometricClient(App):
                 yield Button("⟳  Reconnect",     id="btn-reconnect", variant="primary")
                 yield Button("⚙  Settings",      id="btn-settings",  variant="default")
 
-                yield Static("", classes="divider")
-                yield Static("◈ POWER", classes="section-label")
-                yield Button("⟳  Reboot Pi",     id="btn-reboot",   variant="warning")
-                yield Button("⏻  Power Off Pi",  id="btn-poweroff", variant="error")
-
             # ── Main panel ────────────────────────────────────────────────
             with Vertical(id="main-area"):
                 yield Static("Enrolled Users", classes="section-label")
@@ -915,30 +910,6 @@ class BiometricClient(App):
             self.run_worker(self._do_reconnect(), name="manual-reconnect")
             return
 
-        # ── Reboot Pi — confirmation required ─────────────────────────────
-        if btn == "btn-reboot":
-            def _do_reboot():
-                self.run_worker(self._power_command("reboot"), name="reboot-pi")
-            self.push_screen(ConfirmScreen(
-                "⚠  Confirm Reboot",
-                "Reboot the Raspberry Pi?\n"
-                "The server will go offline and come back after ~30 s.",
-                _do_reboot,
-            ))
-            return
-
-        # ── Power Off Pi — confirmation required ──────────────────────────
-        if btn == "btn-poweroff":
-            def _do_poweroff():
-                self.run_worker(self._power_command("poweroff"), name="poweroff-pi")
-            self.push_screen(ConfirmScreen(
-                "⚠  Confirm Power Off",
-                "Shut down the Raspberry Pi?\n"
-                "You will need physical access to turn it back on.",
-                _do_poweroff,
-            ))
-            return
-
         # ── Delete — show confirmation before doing anything ──────────────
         if btn == "btn-delete":
             name = self.query_one("#del-name", Input).value.strip()
@@ -981,25 +952,6 @@ class BiometricClient(App):
                     json.dumps({"command": "cancel_enroll_face"}))
             except Exception:
                 pass
-
-    # ── Reboot / Power-off ────────────────────────────────────────────────────
-    async def _power_command(self, cmd: str) -> None:
-        """Send reboot or poweroff and handle the expected disconnect."""
-        label = "Reboot" if cmd == "reboot" else "Power Off"
-        async with self._cmd_lock:
-            self._action(f"{label} — sending…")
-            self._sys_log(f"[yellow]► {label} requested…[/yellow]")
-            res = await self._send({"command": cmd}, timeout=10.0)
-            if res and res.get("status") == "success":
-                self._sys_log(
-                    f"[green]✓ {res.get('message', label + ' in progress')}[/green]")
-                self.notify(res.get("message", f"{label} in progress"),
-                            severity="information")
-            else:
-                msg = res.get("message", "No response") if res else "No response"
-                self._sys_log(f"[red]✘ {label} failed: {msg}[/red]")
-                self.notify(f"{label} failed: {msg}", severity="error")
-            self._action("Ready")
 
     # ── General command worker ────────────────────────────────────────────────
     async def _command_worker(self, btn: str) -> None:
