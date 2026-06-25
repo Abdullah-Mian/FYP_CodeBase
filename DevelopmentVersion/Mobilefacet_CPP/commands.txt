@@ -1,0 +1,76 @@
+MobileFaceNet_RPi/
+├── CMakeLists.txt
+├── src/
+│   ├── face_engine.h
+│   ├── face_engine.cpp
+│   ├── mobilefacenet.h
+│   ├── mobilefacenet.cpp
+│   └── face_detector.h
+│   └── face_detector.cpp
+├── python/
+│   └── face_system.py
+├── models/
+│   ├── mobilefacenet.param
+│   ├── mobilefacenet.bin
+│   ├── ultraface-rfb-320.param    # You need to download this
+│   └── ultraface-rfb-320.bin      # You need to download this
+└── database/
+
+##########################################
+
+cd models/
+# Get the BlazeFace model files
+cd ~/Downloads/Mobilefacet_CPP/models
+
+# Clone just the model files from zineos/blazeface
+cd /tmp
+git clone --depth 1 https://github.com/zineos/blazeface.git
+cp /tmp/blazeface/demo_ncnn/model/blaceface.param ~/Downloads/Mobilefacet_CPP/models/blazeface.param
+cp /tmp/blazeface/demo_ncnn/model/blaceface.bin ~/Downloads/Mobilefacet_CPP/models/blazeface.bin
+rm -rf /tmp/blazeface
+
+# Verify
+head -1 ~/Downloads/Mobilefacet_CPP/models/blazeface.param
+# Should show: 7767517
+
+ls -la ~/Downloads/Mobilefacet_CPP/models/
+
+##########################
+
+#!/bin/bash
+set -e
+
+# ====== 2. Build C++ ======
+cd ~/Downloads/Mobilefacet_CPP
+mkdir -p build database
+cd build
+rm -rf *
+cmake -DCMAKE_BUILD_TYPE=Release ..
+make -j4
+echo "✅ Build complete"
+
+
+# ====== 3. Setup Python env (for hybrid mode) ======
+
+cd ~/Downloads/Mobilefacet_CPP
+rm -rf venv
+
+python3 -m venv --system-site-packages venv
+source venv/bin/activate
+
+# do not pip install opencv
+sudo apt install -y python3-opencv
+python3 -c "from picamera2 import Picamera2; print('✅ picamera2 OK')"
+
+
+pip install adafruit-blinka adafruit-circuitpython-rgb-display
+pip install mediapipe
+
+
+# ====== 4. Test standalone C++ (from XFCE desktop) ======
+
+# To run pure C++:
+cd build && ./face_system_cpp
+
+# To run hybrid:
+python3 python/face_system.py
